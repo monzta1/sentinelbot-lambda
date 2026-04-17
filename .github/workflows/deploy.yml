@@ -1,0 +1,33 @@
+name: Deploy SentinelBot Lambda
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Create deployment zip
+        run: zip function.zip index.js README.md
+
+      - name: Deploy Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name sentinelbot-handler \
+            --zip-file fileb://function.zip \
+            --region $AWS_REGION
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
