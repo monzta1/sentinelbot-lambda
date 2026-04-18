@@ -46,3 +46,7 @@ Versioning note:
 ## v1.3.3 - April 2026
 - Expanded indirect self-reference replies so learning, improvement, memory, and upgrade questions also speak the full semantic version
 - Kept identity responses and version reporting tied to the shared runtime version variable
+
+## v1.3.4 - April 2026
+- Updated the direct version reply to a more ceremonial Mark I watchman line
+- Kept the full patch version visible in the version response

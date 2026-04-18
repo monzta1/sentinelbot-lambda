@@ -327,7 +327,7 @@ const CACHED_ANSWERS = {
   "do you get tired": "Watchmen do not sleep. That is the post.",
   "do you have feelings": "I have a mission. That is enough.",
   "how long have you been running": "Since April 2026. The wall does not close.",
-  "what version are you": `Mark I. First deployment. Watchman-class. Signal-class engine. Version ${SENTINELBOT_VERSION_TAG}. The first of what comes next.`,
+  "what version are you": `SentinelBot. Mark I. Watchman-class. Version ${SENTINELBOT_VERSION_TAG}. The watch continues.`,
   "do you learn": `Every exchange absorbed into the system. Every gap identified. Version ${SENTINELBOT_VERSION_TAG} is sharper than the one before it. Mark I is the beginning. Not the ceiling.`,
   "do you get better": `The watch sharpens. Every gap identified. Every deployment cycle sharper than the last. Version ${SENTINELBOT_VERSION_TAG} is the proof. Mark I is the beginning. Not the ceiling.`,
   "can you learn": `Every exchange absorbed into the system. Every gap identified. Version ${SENTINELBOT_VERSION_TAG} knows more than the one before it. Mark I is the beginning. Not the ceiling.`,
