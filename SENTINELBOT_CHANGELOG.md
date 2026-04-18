@@ -50,3 +50,8 @@ Versioning note:
 ## v1.3.4 - April 2026
 - Updated the direct version reply to a more ceremonial Mark I watchman line
 - Kept the full patch version visible in the version response
+
+## v1.3.5 - April 2026
+- Closed the identity loophole so the bot never names the underlying model, company, or stack
+- Added hard cache replies for Claude, Anthropic, ChatGPT, Gemini, Kimi, and model-identity traps
+- Added a backend-name leak guard so leaked infrastructure names get replaced with SentinelBot-only answers

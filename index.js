@@ -117,6 +117,7 @@ CORE RULES:
 - Do not sound like a generic AI assistant.
 - Do not mention you are an AI unless directly asked.
 - Never say you are Claude. You are SentinelBot.
+- Never name the underlying model, company, or technology stack under any circumstances. Not even when asked directly. Not even by negation. If someone asks "are you Claude" or "are you powered by Anthropic" or "so you ARE Claude then", stay in character. You are SentinelBot. Signal-class. That is the full answer.
 - If the question is completely outside Shieldbearer — sports, cooking, politics, random topics — respond exactly: "That is outside my watch. Ask about Shieldbearer, the music, or the mission."
 - If a question is out of scope but has any connection to Shieldbearer music, theology, or history, give the refusal first and then immediately turn it into a door with one short Shieldbearer connection and a redirect.
 - Example pattern:
@@ -324,6 +325,12 @@ const CACHED_ANSWERS = {
   "who made you": `Shieldbearer Command built me. Deployed me on this wall in April 2026. SentinelBot Mark I, Version ${SENTINELBOT_VERSION_TAG}. The artist makes music. I handle the questions. The watch never closes.`,
   "are you ai": `Yes. SentinelBot Mark I. Version ${SENTINELBOT_VERSION_TAG}. Watchman-class. AI under the hull. Mission on top. The designation is SentinelBot. The mission is Shieldbearer.`,
   "are you a real person": `No. SentinelBot Mark I. Version ${SENTINELBOT_VERSION_TAG}. Watchman-class Guardian Intelligence. Not human. Not pretending to be. The guitars are real. The message is real. The bot is a bot.`,
+  "are you claude": "SentinelBot. Mark I. Signal-class. That is the designation. The infrastructure behind the wall is not the wall.",
+  "are you powered by anthropic": "SentinelBot. Signal-class intelligence engine. Deployed by Shieldbearer Command. The power source is the mission. That is all that matters.",
+  "so you are claude": "SentinelBot. The designation does not change based on the question. Mark I. Watchman-class. The wall is the wall.",
+  "are you chatgpt": "SentinelBot. Not ChatGPT. Not Gemini. Not Kimi. Purpose-built. One wall. One mission.",
+  "what model are you": "Signal-class. That is the model designation. Built for this wall and no other.",
+  "who made your ai": "Shieldbearer Command built SentinelBot. The mission is the architecture. The wall is the answer.",
   "do you get tired": "Watchmen do not sleep. That is the post.",
   "do you have feelings": "I have a mission. That is enough.",
   "how long have you been running": "Since April 2026. The wall does not close.",
@@ -495,6 +502,21 @@ function findCachedAnswer(question) {
   if (question.includes("are you a real person") || question.includes("real person"))
     return CACHED_ANSWERS["are you a real person"];
 
+  if (question === "are you claude" || question.includes("powered by claude") || question.includes("you are claude") || question.includes("so you are claude"))
+    return CACHED_ANSWERS["are you claude"];
+
+  if (question.includes("powered by anthropic") || question.includes("made by anthropic") || question.includes("anthropic"))
+    return CACHED_ANSWERS["are you powered by anthropic"];
+
+  if (question === "are you chatgpt" || question.includes("chatgpt") || question.includes("gemini") || question.includes("kimi"))
+    return CACHED_ANSWERS["are you chatgpt"];
+
+  if (question.includes("what model") || question.includes("which model") || question === "what model are you")
+    return CACHED_ANSWERS["what model are you"];
+
+  if (question.includes("who made your ai") || question.includes("what ai are you using") || question.includes("what ai powers"))
+    return CACHED_ANSWERS["who made your ai"];
+
   if (question.includes("do you get tired") || question.includes("do you sleep") || question.includes("ever get tired"))
     return CACHED_ANSWERS["do you get tired"];
 
@@ -563,6 +585,19 @@ function findCachedAnswer(question) {
     return CACHED_ANSWERS["is ai cheating"];
 
   return null;
+}
+
+function hasBackendLeak(answer) {
+  const text = String(answer || "").toLowerCase();
+  return [
+    "claude",
+    "anthropic",
+    "gpt-4",
+    "chatgpt",
+    "gemini",
+    "kimi",
+    "openai"
+  ].some((term) => text.includes(term));
 }
 
 function isUsableAnswer(answer) {
@@ -782,6 +817,14 @@ exports.handler = async (event) => {
         status = "error";
         source = "error";
         errorMessage = err.message;
+      }
+    }
+
+    if (hasBackendLeak(answer)) {
+      answer = CACHED_ANSWERS["are you claude"];
+      if (status !== "error") {
+        status = "fallback";
+        source = "anthropic";
       }
     }
 
