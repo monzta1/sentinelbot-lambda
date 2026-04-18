@@ -37,3 +37,8 @@ Versioning note:
 - Documented semantic versioning for SentinelBot releases
 - Aligned the bot changelog with patch-level release tracking
 - Kept runtime behavior on v1.3 while the changelog records incremental updates
+
+## v1.3.2 - April 2026
+- Updated the identity replies so who-are-you questions speak the full semantic version
+- Advanced the runtime version label to the next patch release
+- Kept the Mark I watchman voice intact while making version reporting more precise
