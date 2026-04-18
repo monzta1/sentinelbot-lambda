@@ -42,3 +42,7 @@ Versioning note:
 - Updated the identity replies so who-are-you questions speak the full semantic version
 - Advanced the runtime version label to the next patch release
 - Kept the Mark I watchman voice intact while making version reporting more precise
+
+## v1.3.3 - April 2026
+- Expanded indirect self-reference replies so learning, improvement, memory, and upgrade questions also speak the full semantic version
+- Kept identity responses and version reporting tied to the shared runtime version variable
