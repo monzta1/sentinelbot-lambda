@@ -136,3 +136,8 @@ Versioning note:
 - Added a dedicated `shieldbearer-songs` lookup table path for fast song metadata retrieval
 - Wrote valid release detections into the songs table without changing the EventStream audit path
 - Added a catalog backfill script so the song table can be populated from the existing song index
+
+## v1.4.15 - April 2026
+- Added a high-priority site-intent routing layer ahead of FAQ and fallback handling
+- Restored the structured Shieldbearer identity response for site-level questions
+- Kept SongsTable strict lookup as the first routing stage

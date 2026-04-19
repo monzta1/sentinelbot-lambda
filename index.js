@@ -89,6 +89,35 @@ function selectBestSongCandidate(items, normalizedTitle) {
     .map((entry) => entry.candidate)[0] || null;
 }
 
+function formatPublishedAtForStrictLookup(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+
+  const datePart = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    month: "long",
+    day: "numeric",
+    year: "numeric"
+  }).format(date);
+
+  const hasExplicitTime = /T\d{2}:\d{2}/.test(raw) || /\d{2}:\d{2}:\d{2}/.test(raw);
+  if (!hasExplicitTime) {
+    return datePart;
+  }
+
+  const timePart = new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(date);
+
+  return `${datePart} (${timePart} UTC)`;
+}
+
 function extractReleaseQueryTitle(question) {
   const value = normalizeQuestion(question);
   if (!value) return "";
@@ -259,7 +288,8 @@ async function lookupSongStrictResponse(question) {
     responseMode: "strict-lookup"
   }));
 
-  return song.title ? `${song.title} — ${song.publishedAt}` : song.publishedAt;
+  const formattedDate = formatPublishedAtForStrictLookup(song.publishedAt);
+  return song.title ? `${song.title} — ${formattedDate}` : formattedDate;
 }
 
 async function resolveSongLookup(question) {
@@ -866,8 +896,8 @@ async function getSystemPromptProduction() {
 }
 
 const CACHED_ANSWERS = {
-  "who is shieldbearer": 'Solo Christian metal. Moncy Abraham. Real guitars, real conviction, Scripture at the center. Christ named plainly in every track. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a>',
-  "what is shieldbearer": 'Solo Christian metal. Moncy Abraham. Real guitars, real conviction, Scripture at the center. Christ named plainly in every track. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a>',
+  "who is shieldbearer": 'Shieldbearer is a Christian metal project built on one mission: proclaim Christ clearly through heavy music. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a> <a href="https://shieldbearerusa.com/story.html" target="_blank">The Story</a>',
+  "what is shieldbearer": 'Shieldbearer is a Christian metal project built on one mission: proclaim Christ clearly through heavy music. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a> <a href="https://shieldbearerusa.com/story.html" target="_blank">The Story</a>',
   "who is this": "I'm SentinelBot for Shieldbearer. I answer questions about the music, the theology behind it, and the mission: proclaiming Christ clearly through heavy music. Shieldbearer is led by Moncy Abraham. Christian metal, real guitars, unambiguous faith. What do you want to know?",
   "what is the top song": 'Celestial Shield and Ruler of the Storm have the highest YouTube views. Galilean is the foundation. Cosmos and incarnation, John 1:14. Start there. Full catalog: <a href="https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz" target="_blank">Spotify</a>',
   "what is the best song": 'Celestial Shield and Ruler of the Storm have the highest YouTube views. Galilean is the foundation. Cosmos and incarnation, John 1:14. Start there. Full catalog: <a href="https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz" target="_blank">Spotify</a>',
@@ -915,7 +945,7 @@ const recentQuestions = new Map();
 const FAQ_ROUTES = [
   {
     match: (question) => question === "what is shieldbearer" || question === "who is shieldbearer",
-    answer: 'Solo Christian metal. Moncy Abraham. Real guitars, real conviction, Scripture at the center. Christ named plainly in every track. <a href="https://shieldbearerusa.com/faq.html#faq-what-is" target="_blank">FAQ</a>'
+    answer: 'Shieldbearer is a Christian metal project built on one mission: proclaim Christ clearly through heavy music. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a> <a href="https://shieldbearerusa.com/story.html" target="_blank">The Story</a>'
   },
   {
     match: (question) => question === "are the guitars real" || (question.includes("guitar") && (question.includes("real") || question.includes("actual"))),
@@ -1029,6 +1059,25 @@ const FAQ_ROUTES = [
 
 function normalizeQuestion(q) {
   return (q || "").toLowerCase().trim();
+}
+
+function isSiteIntentQuestion(question) {
+  if (!question) return false;
+
+  const triggers = [
+    "what is shieldbearer",
+    "who is shieldbearer",
+    "what is this site",
+    "what is the site about",
+    "what is the project about",
+    "about shieldbearer"
+  ];
+
+  return triggers.some((trigger) => question === trigger || question.includes(trigger));
+}
+
+function getSiteIntentResponse() {
+  return 'Shieldbearer is a Christian metal project built on one mission: proclaim Christ clearly through heavy music. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a> <a href="https://shieldbearerusa.com/story.html" target="_blank">The Story</a>';
 }
 
 async function findCachedAnswer(question) {
@@ -1452,6 +1501,11 @@ exports.handler = async (event) => {
           fallbackReason = fallbackReason || "song_not_found";
         }
       }
+    } else if (isSiteIntentQuestion(question)) {
+      answer = getSiteIntentResponse();
+      source = "site-intent";
+      lookupMode = "site-intent";
+      fallbackReason = null;
     } else {
       answer = await findCachedAnswer(question);
       if (!answer) {
