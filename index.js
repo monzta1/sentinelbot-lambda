@@ -59,6 +59,24 @@ function normalizeSongDescription(value) {
     .trim();
 }
 
+function formatSongDisplayTitle(value) {
+  const normalized = normalizeSongTitle(value);
+  if (!normalized) return String(value || "").trim();
+
+  const smallWords = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "of", "on", "or", "the", "to", "with"]);
+  return normalized
+    .split(" ")
+    .map((word, index, words) => {
+      if (!word) return "";
+      if (index !== 0 && index !== words.length - 1 && smallWords.has(word)) {
+        return word;
+      }
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(" ")
+    .trim();
+}
+
 function getLegacySongContextOverride(value) {
   const normalized = normalizeSongTitle(value);
   if (!normalized) return null;
@@ -660,8 +678,9 @@ async function lookupSongContextByQuestion(question) {
     const context = buildSongContextSummary(tableSong);
     const themeSummary = context.summary || context.meaning || context.theme;
     if (themeSummary) {
+      const displayTitle = formatSongDisplayTitle(title || tableSong.canonicalTitle || tableSong.title || "");
       return {
-        answer: `${tableSong.canonicalTitle || tableSong.title || title} explores ${themeSummary}`,
+        answer: `${displayTitle} explores ${themeSummary}`,
         lookupMode: "song-context",
         fallbackReason: null,
         songsTableAvailable: songsTableAvailable === true,
@@ -679,8 +698,10 @@ async function lookupSongContextByQuestion(question) {
   const themeSummary = context.summary || context.meaning || context.theme;
   if (!themeSummary) return null;
 
+  const displayTitle = formatSongDisplayTitle(title || song?.canonicalTitle || song?.title || "");
+
   return {
-    answer: `${song.title || title} explores ${themeSummary}`,
+    answer: `${displayTitle} explores ${themeSummary}`,
     lookupMode: "song-context",
     fallbackReason: null,
     songsTableAvailable: songsTableAvailable === true,

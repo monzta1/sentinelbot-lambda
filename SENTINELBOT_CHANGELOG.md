@@ -160,3 +160,7 @@ Versioning note:
 ## v1.4.19 - April 2026
 - Added a deterministic legacy context override for `Prison Break`
 - Kept meaning queries from falling through to release-date answers when the stored song row is sparse
+
+## v1.4.20 - April 2026
+- Added human-readable song display titles to meaning responses
+- Kept the Song Context layer deterministic while making answers read like proper sentences
