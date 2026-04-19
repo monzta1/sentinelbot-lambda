@@ -294,6 +294,13 @@ async function lookupSongStrictResponse(question) {
 
 async function resolveSongLookup(question) {
   const available = await getSongsTableAvailability();
+  if (isSongContextQuestion(question)) {
+    const contextSong = await lookupSongContextByQuestion(question);
+    if (contextSong) {
+      return contextSong;
+    }
+  }
+
   const strictSongResponse = available ? await lookupSongStrictResponse(question) : null;
   if (strictSongResponse) {
     return {
@@ -452,6 +459,15 @@ function isSongMeaningQuestion(question) {
     normalized.includes("about");
 }
 
+function isSongContextQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  return normalized.includes("about this song") ||
+    normalized.includes("what is this song about") ||
+    normalized.includes("what does this song mean") ||
+    normalized.includes("meaning of") ||
+    normalized.includes("what is ") && normalized.includes(" about");
+}
+
 function isSongLookupQuestion(question) {
   const normalized = normalizeQuestion(question);
   const title = extractReleaseQueryTitle(question);
@@ -470,6 +486,46 @@ function isSongLookupQuestion(question) {
   const aboutIntent = normalized.includes("about") && normalizedTitle.split(" ").length >= 2;
 
   return knownSong || explicitSongIntent || aboutIntent;
+}
+
+function buildSongContextSummary(song) {
+  const context = song?.songContext && typeof song.songContext === "object" ? song.songContext : {};
+  const theme = String(context.theme || song?.genre || song?.reference || "").trim();
+  const meaning = String(context.meaning || song?.thesis || song?.meaningSummary || "").trim();
+  const summary = String(context.summary || song?.meaningSummary || song?.thesis || "").trim();
+  const scriptureReferences = Array.isArray(context.scriptureReferences) ? context.scriptureReferences.filter(Boolean) : [];
+
+  return {
+    theme,
+    meaning,
+    summary,
+    scriptureReferences
+  };
+}
+
+async function lookupSongContextByQuestion(question) {
+  const title = extractReleaseQueryTitle(question);
+  if (!title) return null;
+
+  const normalized = normalizeReleaseTitle(title);
+  if (!normalized) return null;
+
+  const index = loadSongIndex();
+  const song = index.byTitle?.[normalized] || index.bySlug?.[normalized] || null;
+  if (!song) return null;
+
+  const context = buildSongContextSummary(song);
+  const themeSummary = context.summary || context.meaning || context.theme;
+  if (!themeSummary) return null;
+
+  return {
+    answer: `${song.title || title} explores ${themeSummary}`,
+    lookupMode: "song-context",
+    fallbackReason: null,
+    songsTableAvailable: songsTableAvailable === true,
+    songId: String(song.songId || song.id || "").trim(),
+    context
+  };
 }
 
 async function lookupSongByQuestion(question) {
@@ -491,14 +547,17 @@ async function lookupSongByQuestion(question) {
   const releaseLabel = String(song.releaseLabel || "").trim();
   const publishedAt = String(song.publishedAt || "").trim();
   const sourceUrl = String(song.sourceUrl || song.actions?.youtube || song.actions?.spotify || meaningUrl).trim();
+  const context = buildSongContextSummary(song);
 
   return {
     title: song.title || title,
+    canonicalTitle: song.canonicalTitle || song.title || title,
     meaningUrl,
     summary,
     releaseLabel,
     publishedAt,
-    sourceUrl
+    sourceUrl,
+    songContext: context
   };
 }
 

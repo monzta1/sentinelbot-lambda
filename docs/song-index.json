@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-19T18:20:16.606Z",
+  "generatedAt": "2026-04-19T20:16:04.511Z",
   "source": "shieldbearer-website/song-meanings.html",
   "count": 11,
   "byTitle": {
@@ -26,6 +26,14 @@
         "Warning",
         "Vigilance"
       ],
+      "songContext": {
+        "theme": "Watchman, Warning, Vigilance",
+        "meaning": "A battle cry for those who stay awake when the world drifts, who guard the truth when silence is easier, and who sound the warning when the sword is near.",
+        "scriptureReferences": [
+          "Ezekiel 33:7"
+        ],
+        "summary": "Sentinels is a battle cry for those who stay awake when the world drifts, who guard the truth when silence is easier, and who sound the warning when the sword is near. This song draws from the biblical image of the watchman on the wall. In Scripture, the watchman is called to stay alert, lift his voice, and warn the people. That calling still matters now. Stand awake. Guard the truth. Sound the warning. The King is coming. Scripture: Ezekiel 33:7"
+      },
       "artwork": "https://img.youtube.com/vi/0jPL3Mg88ZQ/hqdefault.jpg",
       "actions": {
         "spotify": "",
@@ -56,6 +64,14 @@
         "Incarnation",
         "Cosmos"
       ],
+      "songContext": {
+        "theme": "Creation, Incarnation, Cosmos",
+        "meaning": "A collision point of cosmos and incarnation. The One everything orbits around entered history.",
+        "scriptureReferences": [
+          "John 1:14"
+        ],
+        "summary": "This one started with the Galilean moons. Just space facts at first. Then the word stayed. Galilean can mean astronomy, observation, and Galilee. Same word. Different worlds. That tension became the center of the song. The track moves through creation and scale while pointing to Christ without hiding Him in vague language. Scripture: John 1:14"
+      },
       "artwork": "images/galilean-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/album/0UqnB3Kw8s4yiDUVgvvgDT",
@@ -86,6 +102,14 @@
         "Breath",
         "Power"
       ],
+      "songContext": {
+        "theme": "Spirit, Breath, Power",
+        "meaning": "Breath, wind, Spirit. The unseen force of God over creation, judgment, and renewal.",
+        "scriptureReferences": [
+          "Genesis 1:2"
+        ],
+        "summary": "Ruach is the Hebrew word for breath, wind, and Spirit. The song was built as a declaration, not an abstraction. Lyrics are anchored in Scripture and conviction. Heavy guitars, growled worship, and unapologetic theological focus. The point is simple: the breath of God still moves, and creation still responds. Scripture: Genesis 1:2"
+      },
       "artwork": "images/ruach-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/54vAgzYCsp5k2lAJ76CYHx",
@@ -116,6 +140,14 @@
         "Victory",
         "Judgment"
       ],
+      "songContext": {
+        "theme": "Resurrection, Victory, Judgment",
+        "meaning": "The resurrection is not metaphorical memory. It is violent power breaking history open.",
+        "scriptureReferences": [
+          "Matthew 28:2"
+        ],
+        "summary": "The earth shook at the resurrection and death lost. Quake is about that moment and its continuing force. This is not symbolic softness. It is the loudest event in history, still declaring Christ is alive. Scripture: Matthew 28:2"
+      },
       "artwork": "images/unaliving-the-giant-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/0hNjSmXUg9WsLxAfGf1nDV",
@@ -146,6 +178,14 @@
         "Scripture",
         "Christ"
       ],
+      "songContext": {
+        "theme": "Passion, Scripture, Christ",
+        "meaning": "Verbatim Scripture metal. Pilate spoke more truth than he understood.",
+        "scriptureReferences": [
+          "John 19:5"
+        ],
+        "summary": "The lyrical foundation is drawn from Scripture and centered on \"Behold the man.\" This dossier holds the theological core now and can be expanded with full lyric manuscript in the same structure. Scripture: John 19:5"
+      },
       "artwork": "images/the-man-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/31TZ3S9WFnHrW80XuDimH4",
@@ -176,6 +216,14 @@
         "Resurrection",
         "Warfare"
       ],
+      "songContext": {
+        "theme": "Victory, Resurrection, Warfare",
+        "meaning": "Christ storms the kingdom of darkness, shatters chains, and reigns over hell itself.",
+        "scriptureReferences": [
+          "Revelation 1:18"
+        ],
+        "summary": "This song is a war proclamation of Christ triumphant over death, hell, and every throne of darkness. Every stanza drives one declaration: the risen King reigns, chains break, and no power can stand against Him. Scripture: Revelation 1:18"
+      },
       "artwork": "images/over-the-skies-of-hell-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/4pFRPN0h48NoUcXTmUy6hz",
@@ -206,6 +254,14 @@
         "Faith",
         "Victory"
       ],
+      "songContext": {
+        "theme": "Battle, Faith, Victory",
+        "meaning": "The Lord of Hosts brings giants down. Pride falls when faith steps forward.",
+        "scriptureReferences": [
+          "1 Samuel 17:47"
+        ],
+        "summary": "This song stands in the David and Goliath line: not confidence in size, but confidence in the Name. The core claim is simple. Giants fall, thrones crack, and the field belongs to the Lord alone. Scripture: 1 Samuel 17:47"
+      },
       "artwork": "images/unaliving-the-giant-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/03YjoeGtB4vJHNBI0x3aFK",
@@ -237,6 +293,14 @@
         "Hope",
         "Christmas"
       ],
+      "songContext": {
+        "theme": "Hymn Reloaded, Worship, Hope, Christmas",
+        "meaning": "A re-forged proclamation of comfort and joy for a restless generation.",
+        "scriptureReferences": [
+          "Luke 2:10"
+        ],
+        "summary": "This track reworks the old hymn language into a modern Shieldbearer frame without losing its core proclamation. It carries the same declaration through a new sonic world: comfort and joy under the rule of Christ. Scripture: Luke 2:10"
+      },
       "artwork": "images/tidings-of-comfort-and-joy-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/01Bp4hqrgYAIqUg1kQnj3e",
@@ -268,6 +332,12 @@
         "Lament",
         "Prayer"
       ],
+      "songContext": {
+        "theme": "Country, America, Lament, Prayer",
+        "meaning": "A raw prayer over a fractured country. Unpolished on purpose, because the wound itself is part of the message.",
+        "scriptureReferences": [],
+        "summary": "Gut Punch is a prayer for America written in a season when the news kept coming and nothing made sense. It stays raw on purpose. The point is not polish for its own sake. The point is to tell the truth about grief, disorientation, and the only place left to run. External lyrics sites may censor lines or flatten the message. This archive entry exists so the song has a home at the source."
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -299,6 +369,12 @@
         "Story",
         "Family"
       ],
+      "songContext": {
+        "theme": "Country, Fatherhood, Story, Family",
+        "meaning": "A small domestic moment turned into a testimony about fatherhood, time, and the love that keeps showing up.",
+        "scriptureReferences": [],
+        "summary": "A little kid walks up with a broken toy helicopter and asks, \"Dada, can you fix it?\" That moment becomes the whole song. Broken Helicopter is built around fatherhood, time, and the love that never stops trying to mend what is broken. From fixing a toy on the floor to cheering from the sidelines, the song follows the long arc of a father staying present. It is a story every parent will feel somewhere in the chest: the child changes, the questions change, the battles change, but the instinct to help, hold, and steady them does not."
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -330,6 +406,14 @@
         "Family",
         "Hope"
       ],
+      "songContext": {
+        "theme": "Country, Testimony, Family, Hope",
+        "meaning": "A testimony song for Leo and for every family waiting, praying, and refusing to give up.",
+        "scriptureReferences": [
+          "Psalm 40:1-3"
+        ],
+        "summary": "Our son Leo was diagnosed with autism before school. For years, we were not sure if he would ever speak clearly. He lined up toys instead of using words, and there were long stretches of silence while other kids seemed to run ahead. But God was faithful. Through prayer, patience, and the tireless love of his teachers, Leo found his voice. Today he is thriving in math, raising his hand in class, and shining with the gifts God has placed in him. This song is dedicated to his journey and to every teacher who saw the spark behind his eyes and refused to give up. The track was built around clean guitar on an all-rosewood Telecaster, shaped with parallel compression, chorus, delay, and reverb so the vocal stays front and center. Scripture: Psalm 40:1-3"
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -362,6 +446,14 @@
         "Warning",
         "Vigilance"
       ],
+      "songContext": {
+        "theme": "Watchman, Warning, Vigilance",
+        "meaning": "A battle cry for those who stay awake when the world drifts, who guard the truth when silence is easier, and who sound the warning when the sword is near.",
+        "scriptureReferences": [
+          "Ezekiel 33:7"
+        ],
+        "summary": "Sentinels is a battle cry for those who stay awake when the world drifts, who guard the truth when silence is easier, and who sound the warning when the sword is near. This song draws from the biblical image of the watchman on the wall. In Scripture, the watchman is called to stay alert, lift his voice, and warn the people. That calling still matters now. Stand awake. Guard the truth. Sound the warning. The King is coming. Scripture: Ezekiel 33:7"
+      },
       "artwork": "https://img.youtube.com/vi/0jPL3Mg88ZQ/hqdefault.jpg",
       "actions": {
         "spotify": "",
@@ -392,6 +484,14 @@
         "Incarnation",
         "Cosmos"
       ],
+      "songContext": {
+        "theme": "Creation, Incarnation, Cosmos",
+        "meaning": "A collision point of cosmos and incarnation. The One everything orbits around entered history.",
+        "scriptureReferences": [
+          "John 1:14"
+        ],
+        "summary": "This one started with the Galilean moons. Just space facts at first. Then the word stayed. Galilean can mean astronomy, observation, and Galilee. Same word. Different worlds. That tension became the center of the song. The track moves through creation and scale while pointing to Christ without hiding Him in vague language. Scripture: John 1:14"
+      },
       "artwork": "images/galilean-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/album/0UqnB3Kw8s4yiDUVgvvgDT",
@@ -422,6 +522,14 @@
         "Breath",
         "Power"
       ],
+      "songContext": {
+        "theme": "Spirit, Breath, Power",
+        "meaning": "Breath, wind, Spirit. The unseen force of God over creation, judgment, and renewal.",
+        "scriptureReferences": [
+          "Genesis 1:2"
+        ],
+        "summary": "Ruach is the Hebrew word for breath, wind, and Spirit. The song was built as a declaration, not an abstraction. Lyrics are anchored in Scripture and conviction. Heavy guitars, growled worship, and unapologetic theological focus. The point is simple: the breath of God still moves, and creation still responds. Scripture: Genesis 1:2"
+      },
       "artwork": "images/ruach-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/54vAgzYCsp5k2lAJ76CYHx",
@@ -452,6 +560,14 @@
         "Victory",
         "Judgment"
       ],
+      "songContext": {
+        "theme": "Resurrection, Victory, Judgment",
+        "meaning": "The resurrection is not metaphorical memory. It is violent power breaking history open.",
+        "scriptureReferences": [
+          "Matthew 28:2"
+        ],
+        "summary": "The earth shook at the resurrection and death lost. Quake is about that moment and its continuing force. This is not symbolic softness. It is the loudest event in history, still declaring Christ is alive. Scripture: Matthew 28:2"
+      },
       "artwork": "images/unaliving-the-giant-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/0hNjSmXUg9WsLxAfGf1nDV",
@@ -482,6 +598,14 @@
         "Scripture",
         "Christ"
       ],
+      "songContext": {
+        "theme": "Passion, Scripture, Christ",
+        "meaning": "Verbatim Scripture metal. Pilate spoke more truth than he understood.",
+        "scriptureReferences": [
+          "John 19:5"
+        ],
+        "summary": "The lyrical foundation is drawn from Scripture and centered on \"Behold the man.\" This dossier holds the theological core now and can be expanded with full lyric manuscript in the same structure. Scripture: John 19:5"
+      },
       "artwork": "images/the-man-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/31TZ3S9WFnHrW80XuDimH4",
@@ -512,6 +636,14 @@
         "Resurrection",
         "Warfare"
       ],
+      "songContext": {
+        "theme": "Victory, Resurrection, Warfare",
+        "meaning": "Christ storms the kingdom of darkness, shatters chains, and reigns over hell itself.",
+        "scriptureReferences": [
+          "Revelation 1:18"
+        ],
+        "summary": "This song is a war proclamation of Christ triumphant over death, hell, and every throne of darkness. Every stanza drives one declaration: the risen King reigns, chains break, and no power can stand against Him. Scripture: Revelation 1:18"
+      },
       "artwork": "images/over-the-skies-of-hell-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/4pFRPN0h48NoUcXTmUy6hz",
@@ -542,6 +674,14 @@
         "Faith",
         "Victory"
       ],
+      "songContext": {
+        "theme": "Battle, Faith, Victory",
+        "meaning": "The Lord of Hosts brings giants down. Pride falls when faith steps forward.",
+        "scriptureReferences": [
+          "1 Samuel 17:47"
+        ],
+        "summary": "This song stands in the David and Goliath line: not confidence in size, but confidence in the Name. The core claim is simple. Giants fall, thrones crack, and the field belongs to the Lord alone. Scripture: 1 Samuel 17:47"
+      },
       "artwork": "images/unaliving-the-giant-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/03YjoeGtB4vJHNBI0x3aFK",
@@ -573,6 +713,14 @@
         "Hope",
         "Christmas"
       ],
+      "songContext": {
+        "theme": "Hymn Reloaded, Worship, Hope, Christmas",
+        "meaning": "A re-forged proclamation of comfort and joy for a restless generation.",
+        "scriptureReferences": [
+          "Luke 2:10"
+        ],
+        "summary": "This track reworks the old hymn language into a modern Shieldbearer frame without losing its core proclamation. It carries the same declaration through a new sonic world: comfort and joy under the rule of Christ. Scripture: Luke 2:10"
+      },
       "artwork": "images/tidings-of-comfort-and-joy-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/01Bp4hqrgYAIqUg1kQnj3e",
@@ -604,6 +752,12 @@
         "Lament",
         "Prayer"
       ],
+      "songContext": {
+        "theme": "Country, America, Lament, Prayer",
+        "meaning": "A raw prayer over a fractured country. Unpolished on purpose, because the wound itself is part of the message.",
+        "scriptureReferences": [],
+        "summary": "Gut Punch is a prayer for America written in a season when the news kept coming and nothing made sense. It stays raw on purpose. The point is not polish for its own sake. The point is to tell the truth about grief, disorientation, and the only place left to run. External lyrics sites may censor lines or flatten the message. This archive entry exists so the song has a home at the source."
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -635,6 +789,12 @@
         "Story",
         "Family"
       ],
+      "songContext": {
+        "theme": "Country, Fatherhood, Story, Family",
+        "meaning": "A small domestic moment turned into a testimony about fatherhood, time, and the love that keeps showing up.",
+        "scriptureReferences": [],
+        "summary": "A little kid walks up with a broken toy helicopter and asks, \"Dada, can you fix it?\" That moment becomes the whole song. Broken Helicopter is built around fatherhood, time, and the love that never stops trying to mend what is broken. From fixing a toy on the floor to cheering from the sidelines, the song follows the long arc of a father staying present. It is a story every parent will feel somewhere in the chest: the child changes, the questions change, the battles change, but the instinct to help, hold, and steady them does not."
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -666,6 +826,14 @@
         "Family",
         "Hope"
       ],
+      "songContext": {
+        "theme": "Country, Testimony, Family, Hope",
+        "meaning": "A testimony song for Leo and for every family waiting, praying, and refusing to give up.",
+        "scriptureReferences": [
+          "Psalm 40:1-3"
+        ],
+        "summary": "Our son Leo was diagnosed with autism before school. For years, we were not sure if he would ever speak clearly. He lined up toys instead of using words, and there were long stretches of silence while other kids seemed to run ahead. But God was faithful. Through prayer, patience, and the tireless love of his teachers, Leo found his voice. Today he is thriving in math, raising his hand in class, and shining with the gifts God has placed in him. This song is dedicated to his journey and to every teacher who saw the spark behind his eyes and refused to give up. The track was built around clean guitar on an all-rosewood Telecaster, shaped with parallel compression, chorus, delay, and reverb so the vocal stays front and center. Scripture: Psalm 40:1-3"
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -698,6 +866,14 @@
         "Incarnation",
         "Cosmos"
       ],
+      "songContext": {
+        "theme": "Creation, Incarnation, Cosmos",
+        "meaning": "A collision point of cosmos and incarnation. The One everything orbits around entered history.",
+        "scriptureReferences": [
+          "John 1:14"
+        ],
+        "summary": "This one started with the Galilean moons. Just space facts at first. Then the word stayed. Galilean can mean astronomy, observation, and Galilee. Same word. Different worlds. That tension became the center of the song. The track moves through creation and scale while pointing to Christ without hiding Him in vague language. Scripture: John 1:14"
+      },
       "artwork": "images/galilean-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/album/0UqnB3Kw8s4yiDUVgvvgDT",
@@ -728,6 +904,14 @@
         "Breath",
         "Power"
       ],
+      "songContext": {
+        "theme": "Spirit, Breath, Power",
+        "meaning": "Breath, wind, Spirit. The unseen force of God over creation, judgment, and renewal.",
+        "scriptureReferences": [
+          "Genesis 1:2"
+        ],
+        "summary": "Ruach is the Hebrew word for breath, wind, and Spirit. The song was built as a declaration, not an abstraction. Lyrics are anchored in Scripture and conviction. Heavy guitars, growled worship, and unapologetic theological focus. The point is simple: the breath of God still moves, and creation still responds. Scripture: Genesis 1:2"
+      },
       "artwork": "images/ruach-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/54vAgzYCsp5k2lAJ76CYHx",
@@ -758,6 +942,14 @@
         "Victory",
         "Judgment"
       ],
+      "songContext": {
+        "theme": "Resurrection, Victory, Judgment",
+        "meaning": "The resurrection is not metaphorical memory. It is violent power breaking history open.",
+        "scriptureReferences": [
+          "Matthew 28:2"
+        ],
+        "summary": "The earth shook at the resurrection and death lost. Quake is about that moment and its continuing force. This is not symbolic softness. It is the loudest event in history, still declaring Christ is alive. Scripture: Matthew 28:2"
+      },
       "artwork": "images/unaliving-the-giant-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/0hNjSmXUg9WsLxAfGf1nDV",
@@ -788,6 +980,14 @@
         "Scripture",
         "Christ"
       ],
+      "songContext": {
+        "theme": "Passion, Scripture, Christ",
+        "meaning": "Verbatim Scripture metal. Pilate spoke more truth than he understood.",
+        "scriptureReferences": [
+          "John 19:5"
+        ],
+        "summary": "The lyrical foundation is drawn from Scripture and centered on \"Behold the man.\" This dossier holds the theological core now and can be expanded with full lyric manuscript in the same structure. Scripture: John 19:5"
+      },
       "artwork": "images/the-man-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/31TZ3S9WFnHrW80XuDimH4",
@@ -818,6 +1018,14 @@
         "Resurrection",
         "Warfare"
       ],
+      "songContext": {
+        "theme": "Victory, Resurrection, Warfare",
+        "meaning": "Christ storms the kingdom of darkness, shatters chains, and reigns over hell itself.",
+        "scriptureReferences": [
+          "Revelation 1:18"
+        ],
+        "summary": "This song is a war proclamation of Christ triumphant over death, hell, and every throne of darkness. Every stanza drives one declaration: the risen King reigns, chains break, and no power can stand against Him. Scripture: Revelation 1:18"
+      },
       "artwork": "images/over-the-skies-of-hell-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/4pFRPN0h48NoUcXTmUy6hz",
@@ -848,6 +1056,14 @@
         "Faith",
         "Victory"
       ],
+      "songContext": {
+        "theme": "Battle, Faith, Victory",
+        "meaning": "The Lord of Hosts brings giants down. Pride falls when faith steps forward.",
+        "scriptureReferences": [
+          "1 Samuel 17:47"
+        ],
+        "summary": "This song stands in the David and Goliath line: not confidence in size, but confidence in the Name. The core claim is simple. Giants fall, thrones crack, and the field belongs to the Lord alone. Scripture: 1 Samuel 17:47"
+      },
       "artwork": "images/unaliving-the-giant-art.jpg",
       "actions": {
         "spotify": "https://open.spotify.com/track/03YjoeGtB4vJHNBI0x3aFK",
@@ -879,6 +1095,14 @@
         "Hope",
         "Christmas"
       ],
+      "songContext": {
+        "theme": "Hymn Reloaded, Worship, Hope, Christmas",
+        "meaning": "A re-forged proclamation of comfort and joy for a restless generation.",
+        "scriptureReferences": [
+          "Luke 2:10"
+        ],
+        "summary": "This track reworks the old hymn language into a modern Shieldbearer frame without losing its core proclamation. It carries the same declaration through a new sonic world: comfort and joy under the rule of Christ. Scripture: Luke 2:10"
+      },
       "artwork": "images/tidings-of-comfort-and-joy-art.png",
       "actions": {
         "spotify": "https://open.spotify.com/track/01Bp4hqrgYAIqUg1kQnj3e",
@@ -910,6 +1134,12 @@
         "Lament",
         "Prayer"
       ],
+      "songContext": {
+        "theme": "Country, America, Lament, Prayer",
+        "meaning": "A raw prayer over a fractured country. Unpolished on purpose, because the wound itself is part of the message.",
+        "scriptureReferences": [],
+        "summary": "Gut Punch is a prayer for America written in a season when the news kept coming and nothing made sense. It stays raw on purpose. The point is not polish for its own sake. The point is to tell the truth about grief, disorientation, and the only place left to run. External lyrics sites may censor lines or flatten the message. This archive entry exists so the song has a home at the source."
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -941,6 +1171,12 @@
         "Story",
         "Family"
       ],
+      "songContext": {
+        "theme": "Country, Fatherhood, Story, Family",
+        "meaning": "A small domestic moment turned into a testimony about fatherhood, time, and the love that keeps showing up.",
+        "scriptureReferences": [],
+        "summary": "A little kid walks up with a broken toy helicopter and asks, \"Dada, can you fix it?\" That moment becomes the whole song. Broken Helicopter is built around fatherhood, time, and the love that never stops trying to mend what is broken. From fixing a toy on the floor to cheering from the sidelines, the song follows the long arc of a father staying present. It is a story every parent will feel somewhere in the chest: the child changes, the questions change, the battles change, but the instinct to help, hold, and steady them does not."
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -972,6 +1208,14 @@
         "Family",
         "Hope"
       ],
+      "songContext": {
+        "theme": "Country, Testimony, Family, Hope",
+        "meaning": "A testimony song for Leo and for every family waiting, praying, and refusing to give up.",
+        "scriptureReferences": [
+          "Psalm 40:1-3"
+        ],
+        "summary": "Our son Leo was diagnosed with autism before school. For years, we were not sure if he would ever speak clearly. He lined up toys instead of using words, and there were long stretches of silence while other kids seemed to run ahead. But God was faithful. Through prayer, patience, and the tireless love of his teachers, Leo found his voice. Today he is thriving in math, raising his hand in class, and shining with the gifts God has placed in him. This song is dedicated to his journey and to every teacher who saw the spark behind his eyes and refused to give up. The track was built around clean guitar on an all-rosewood Telecaster, shaped with parallel compression, chorus, delay, and reverb so the vocal stays front and center. Scripture: Psalm 40:1-3"
+      },
       "artwork": "images/logo.png",
       "actions": {
         "spotify": "",
@@ -1002,6 +1246,14 @@
         "Warning",
         "Vigilance"
       ],
+      "songContext": {
+        "theme": "Watchman, Warning, Vigilance",
+        "meaning": "A battle cry for those who stay awake when the world drifts, who guard the truth when silence is easier, and who sound the warning when the sword is near.",
+        "scriptureReferences": [
+          "Ezekiel 33:7"
+        ],
+        "summary": "Sentinels is a battle cry for those who stay awake when the world drifts, who guard the truth when silence is easier, and who sound the warning when the sword is near. This song draws from the biblical image of the watchman on the wall. In Scripture, the watchman is called to stay alert, lift his voice, and warn the people. That calling still matters now. Stand awake. Guard the truth. Sound the warning. The King is coming. Scripture: Ezekiel 33:7"
+      },
       "artwork": "https://img.youtube.com/vi/0jPL3Mg88ZQ/hqdefault.jpg",
       "actions": {
         "spotify": "",

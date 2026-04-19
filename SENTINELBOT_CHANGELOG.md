@@ -141,3 +141,8 @@ Versioning note:
 - Added a high-priority site-intent routing layer ahead of FAQ and fallback handling
 - Restored the structured Shieldbearer identity response for site-level questions
 - Kept SongsTable strict lookup as the first routing stage
+
+## v1.4.16 - April 2026
+- Added a dedicated Song Context layer for meaning-based song questions
+- Built song-context fields at index generation time from the canonical song catalog
+- Routed “about this song” and “meaning of” queries away from release facts and into thematic responses

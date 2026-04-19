@@ -98,6 +98,16 @@ function buildSongRecord(song, trackRefs, releaseIndex) {
   const releaseRecord = releaseIndex[normalizedTitle] || null;
   const meaningUrl = `https://shieldbearerusa.com/song-meanings.html#${song.id || normalizedTitle.replace(/\s+/g, "-")}`;
   const meaningSummary = Array.isArray(song.meaning) ? song.meaning.join(" ") : String(song.meaning || "").trim();
+  const scriptureRef = String(song?.scripture?.ref || "").trim();
+  const scriptureQuote = String(song?.scripture?.quote || "").trim();
+  const tags = Array.isArray(song.tags) ? song.tags.map((tag) => String(tag).trim()).filter(Boolean) : [];
+  const theme = tags.length ? tags.join(", ") : String(song.genre || song.reference || "song meaning").trim();
+  const songContext = {
+    theme,
+    meaning: String(song.thesis || meaningSummary || song.reference || title).trim(),
+    scriptureReferences: scriptureRef ? [scriptureRef] : [],
+    summary: String([meaningSummary || song.thesis || "", scriptureRef ? `Scripture: ${scriptureRef}` : ""].filter(Boolean).join(" ")).trim()
+  };
   const trackRef = trackRefs[normalizedTitle] || String(song.reference || "").trim();
 
   return {
@@ -116,9 +126,10 @@ function buildSongRecord(song, trackRefs, releaseIndex) {
     meaningUrl,
     thesis: String(song.thesis || "").trim(),
     meaningSummary,
-    scriptureRef: String(song?.scripture?.ref || "").trim(),
-    scriptureQuote: String(song?.scripture?.quote || "").trim(),
-    tags: Array.isArray(song.tags) ? song.tags.map((tag) => String(tag).trim()).filter(Boolean) : [],
+    scriptureRef,
+    scriptureQuote,
+    tags,
+    songContext,
     artwork: String(song.artwork || "").trim(),
     actions: {
       spotify: String(song?.actions?.spotify || "").trim(),
