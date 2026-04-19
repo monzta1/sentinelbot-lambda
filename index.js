@@ -59,6 +59,38 @@ function normalizeSongDescription(value) {
     .trim();
 }
 
+function getLegacySongContextOverride(value) {
+  const normalized = normalizeSongTitle(value);
+  if (!normalized) return null;
+
+  const overrides = {
+    "prison break": {
+      theme: "Freedom from sin and spiritual captivity",
+      meaning: "Freedom from sin and spiritual captivity. Christ as liberator.",
+      spiritualTone: "Scripture-centered, deliverance, freedom",
+      summary: "Freedom from sin and spiritual captivity. Christ as liberator.",
+      scriptureReferences: []
+    },
+    "prison break remastered": {
+      theme: "Freedom from sin and spiritual captivity",
+      meaning: "Freedom from sin and spiritual captivity. Christ as liberator.",
+      spiritualTone: "Scripture-centered, deliverance, freedom",
+      summary: "Freedom from sin and spiritual captivity. Christ as liberator.",
+      scriptureReferences: []
+    }
+  };
+
+  if (overrides[normalized]) {
+    return overrides[normalized];
+  }
+
+  if (normalized.includes("prison break")) {
+    return overrides["prison break"];
+  }
+
+  return null;
+}
+
 function isShortFormTitle(value) {
   const normalized = normalizeQuestion(value);
   return normalized.includes("#shorts") ||
@@ -186,16 +218,17 @@ function buildSongContextFromStoredData(song) {
   const description = String(song?.description || song?.descriptionNormalized || "").trim();
   const descriptionContext = description ? extractSongContextFromDescription(description, song?.title || song?.canonicalTitle || "") : null;
   const context = song?.songContext && typeof song.songContext === "object" ? song.songContext : {};
+  const legacyOverride = getLegacySongContextOverride(song?.title || song?.canonicalTitle || song?.normalizedTitle || "");
   const theme = String(context.theme || descriptionContext?.theme || song?.genre || song?.reference || "").trim();
-  const meaning = String(context.meaning || descriptionContext?.meaning || song?.thesis || song?.meaningSummary || "").trim();
-  const spiritualTone = String(context.spiritualTone || descriptionContext?.spiritualTone || "").trim();
-  const summary = String(context.summary || descriptionContext?.summary || song?.meaningSummary || song?.thesis || "").trim();
+  const meaning = String(context.meaning || descriptionContext?.meaning || legacyOverride?.meaning || song?.thesis || song?.meaningSummary || "").trim();
+  const spiritualTone = String(context.spiritualTone || descriptionContext?.spiritualTone || legacyOverride?.spiritualTone || "").trim();
+  const summary = String(context.summary || descriptionContext?.summary || legacyOverride?.summary || song?.meaningSummary || song?.thesis || "").trim();
   const scriptureReferences = Array.isArray(context.scriptureReferences) && context.scriptureReferences.length
     ? context.scriptureReferences.filter(Boolean)
-    : (song?.scriptureRef ? [String(song.scriptureRef).trim()].filter(Boolean) : []);
+    : (legacyOverride?.scriptureReferences?.length ? legacyOverride.scriptureReferences : (song?.scriptureRef ? [String(song.scriptureRef).trim()].filter(Boolean) : []));
 
   return {
-    theme,
+    theme: String(context.theme || descriptionContext?.theme || legacyOverride?.theme || song?.genre || song?.reference || "").trim(),
     meaning,
     spiritualTone,
     summary,
@@ -639,7 +672,7 @@ async function lookupSongContextByQuestion(question) {
   }
 
   const index = loadSongIndex();
-  const song = index.byTitle?.[normalized] || index.bySlug?.[normalized] || null;
+  const song = selectBestSongCandidate(index.songs, normalized) || index.byTitle?.[normalized] || index.bySlug?.[normalized] || null;
   if (!song) return null;
 
   const context = buildSongContextSummary(song);

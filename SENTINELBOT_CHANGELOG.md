@@ -151,3 +151,12 @@ Versioning note:
 - Captured YouTube descriptions in the release ingestion pipeline
 - Stored description-backed song context in the SongsTable schema
 - Made meaning responses derive from stored YouTube description data first, with catalog fallback only when needed
+
+## v1.4.18 - April 2026
+- Fixed song-context routing to use best-candidate title matching for meaning questions
+- Prevented long YouTube titles from blocking `what is [song] about` lookups
+- Kept strict release lookup separate from meaning-layer answers
+
+## v1.4.19 - April 2026
+- Added a deterministic legacy context override for `Prison Break`
+- Kept meaning queries from falling through to release-date answers when the stored song row is sparse
