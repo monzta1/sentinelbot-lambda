@@ -55,3 +55,74 @@ Versioning note:
 - Closed the identity loophole so the bot never names the underlying model, company, or stack
 - Added hard cache replies for Claude, Anthropic, ChatGPT, Gemini, Kimi, and model-identity traps
 - Added a backend-name leak guard so leaked infrastructure names get replaced with SentinelBot-only answers
+
+## v1.3.6 - April 2026
+- Added elimination-trap handling so questions that try to force identity by negation get interrupted
+- Kept the response in designation-only language and redirected back to Shieldbearer immediately
+
+## v1.4.0 - April 2026
+- Promoted the expanded knowledge base to the production prompt path
+- Added production prompt caching with the expanded system prompt as the cached prefix
+- Loaded the live handler from `config:system-prompt-expanded`
+- Launched the 96-video knowledge base with 40,721 token coverage
+
+## v1.4.1 - April 2026
+- Added the SentinelBot site publisher layer for artifact output
+- Added git-backed site publication with dry-run-safe logging
+- Prepared the GitHub Pages path for release sync commits without touching the event system
+
+## v1.4.2 - April 2026
+- Added safe live-mode gates for approval and source allowlisting
+- Added immutable site snapshot generation before site.json writes
+- Added duplicate-commit protection based on the latest git commit message
+
+## v1.4.3 - April 2026
+- Added the GitHub Pages build artifact pipeline for SentinelBot site output
+- Added a static Pages renderer that fetches and displays `site.json`
+- Added a build script that copies the latest local `site-output/site.json` into the deploy artifact
+
+## v1.4.4 - April 2026
+- Moved the Pages source of truth into repository state via `docs/site.json`
+- Removed the local `site-output/site.json` production dependency
+- Kept GitHub Actions repo-only while Lambda continues to publish the repo artifact upstream
+
+## v1.4.5 - April 2026
+- Made the SentinelBot site publisher write directly to GitHub Contents API at `docs/site.json`
+- Removed local filesystem and git CLI as the production publication path
+- Kept dry-run and source gating behavior while making GitHub the only production writer
+
+## v1.4.6 - April 2026
+- Hardened the site publisher with deterministic EventStream ordering and empty-stream fallback
+- Added GitHub retry handling for rate limiting and transient failures
+- Tightened the Pages build path to repo-state inputs only
+
+## v1.4.7 - April 2026
+- Removed the dead nested `/tmp` site publisher stub from the release detector tree
+- Trimmed publisher logging down to production decision and retry signals
+- Kept the final pipeline clean of simulation, test, and local-output dependencies
+
+## v1.4.8 - April 2026
+- Required `docs/site.json` as the sole production Pages input
+- Added an explicit build failure when `docs/site.json` is missing
+- Added workflow retries to wait for the committed site artifact before deployment
+- Logged the copied site artifact path and event count during page builds
+
+## v1.4.9 - April 2026
+- Forced the Pages workflow to reset to the latest `origin/main` before building
+- Added a hard non-empty guard for `docs/site.json`
+- Logged the deployed commit SHA and site artifact size before Pages deploy
+
+## v1.4.10 - April 2026
+- Added a retry-wait gate so Pages builds only proceed after `docs/site.json` is present in the synced checkout
+- Logged the `docs/site.json` hash, file size, and event count before building
+- Kept Pages deploys blocked until the Lambda commit is visible in the workflow workspace
+
+## v1.4.11 - April 2026
+- Changed the Pages workflow trigger to `push` only on `docs/site.json`
+- Removed manual workflow dispatch from the Pages deploy path
+- Made the Lambda commit to `docs/site.json` the single source of truth for Pages builds
+
+## v1.4.12 - April 2026
+- Pinned the Pages workflow checkout to `GITHUB_SHA` with full fetch depth
+- Replaced git-metadata validation with filesystem-only checks for `docs/site.json`
+- Added a checksum gate and explicit artifact logging before the Pages build

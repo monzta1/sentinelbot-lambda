@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
+    paths:
+      - docs/site.json
 
 permissions:
   contents: read
@@ -21,24 +22,31 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Sync latest main
+      - name: Pin checkout
         run: |
-          git fetch origin main
-          git reset --hard origin/main
+          git checkout "$GITHUB_SHA"
           echo "Deploying commit: $(git rev-parse HEAD)"
 
-      - name: Verify docs/site.json exists
+      - name: Validate docs/site.json filesystem state
         run: |
-          if [ ! -s docs/site.json ]; then
-            echo "docs/site.json missing or empty"
+          if [ ! -f docs/site.json ]; then
+            echo "site.json not available from Lambda commit yet"
             exit 1
           fi
-          echo "docs/site.json found and non-empty"
-
-      - name: Inspect site artifact
-        run: |
-          node -e 'const fs=require("fs"); const raw=fs.readFileSync("docs/site.json","utf8"); const data=JSON.parse(raw); console.log(JSON.stringify({ commitSha: process.env.GITHUB_SHA, siteJsonBytes: Buffer.byteLength(raw, "utf8"), eventCount: Array.isArray(data.events) ? data.events.length : 0, siteJsonPresent: true }, null, 2));'
+          if [ ! -s docs/site.json ]; then
+            echo "site.json not available from Lambda commit yet"
+            exit 1
+          fi
+          checksum=$(sha256sum docs/site.json | awk '{print $1}')
+          size=$(wc -c < docs/site.json)
+          if [ -z "$checksum" ] || [ "$size" -le 0 ]; then
+            echo "Invalid site.json artifact"
+            exit 1
+          fi
+          node -e 'const fs=require("fs"); const crypto=require("crypto"); const raw=fs.readFileSync("docs/site.json","utf8"); const data=JSON.parse(raw); const checksum=crypto.createHash("sha256").update(raw).digest("hex"); const eventCount=Array.isArray(data.events)?data.events.length:0; if (!checksum || !eventCount && eventCount !== 0) process.exit(1); console.log(JSON.stringify({ commitSha: process.env.GITHUB_SHA, fileHash: checksum, siteJsonBytes: Buffer.byteLength(raw, "utf8"), eventCount, siteJsonPresent: true }, null, 2));'
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

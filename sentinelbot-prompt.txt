@@ -1,0 +1,2 @@
+@source index.js
+@extract SYSTEM_PROMPT

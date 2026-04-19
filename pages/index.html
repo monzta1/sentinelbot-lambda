@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SentinelBot Site Output</title>
+  <meta name="description" content="Live SentinelBot site.json output rendered from GitHub Pages.">
+  <meta name="theme-color" content="#090909">
+  <style>
+    :root {
+      --bg: #090909;
+      --panel: rgba(255,255,255,.04);
+      --panel-strong: rgba(255,255,255,.08);
+      --line: rgba(231,76,60,.24);
+      --text: #f3efe6;
+      --muted: rgba(243,239,230,.72);
+      --accent: #e74c3c;
+      --accent-soft: rgba(231,76,60,.14);
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      --sans: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: radial-gradient(circle at top, #161616 0%, #090909 58%); color: var(--text); font-family: var(--sans); }
+    body { padding: 0; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 40px 20px 72px; }
+    .hero {
+      padding: 42px 28px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+      border-radius: 24px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.35);
+    }
+    .eyebrow {
+      letter-spacing: .28em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-size: .74rem;
+      margin: 0 0 14px;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(2.4rem, 6vw, 5rem);
+      line-height: .92;
+      letter-spacing: .02em;
+      text-transform: uppercase;
+    }
+    .sub {
+      margin: 18px 0 0;
+      max-width: 780px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 1.02rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 22px;
+    }
+    .card {
+      grid-column: span 6;
+      border: 1px solid rgba(255,255,255,.08);
+      background: var(--panel);
+      border-radius: 20px;
+      padding: 20px;
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: .82rem;
+      letter-spacing: .24em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .stat {
+      font-size: 1.15rem;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .panel {
+      margin-top: 22px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(0,0,0,.36);
+      border-radius: 20px;
+      padding: 22px;
+      overflow: auto;
+    }
+    pre {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: .92rem;
+      line-height: 1.6;
+      color: #d6d2c9;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .status {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-radius: 16px;
+      background: var(--accent-soft);
+      border: 1px solid rgba(231,76,60,.25);
+      color: rgba(255,255,255,.92);
+      display: none;
+    }
+    .footer {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: .88rem;
+    }
+    @media (max-width: 760px) {
+      .wrap { padding-inline: 14px; }
+      .hero { padding: 28px 18px; border-radius: 20px; }
+      .card { grid-column: span 12; }
+      .panel { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">SentinelBot Pages</p>
+      <h1>Release State</h1>
+      <p class="sub">
+        This page renders the latest <code>site.json</code> artifact from the SentinelBot publication pipeline.
+        GitHub Pages serves the static output. The artifact is updated upstream by the publisher workflow.
+      </p>
+
+      <div class="grid" id="stats">
+        <div class="card">
+          <h2>Release</h2>
+          <div class="stat" id="releaseId">Loading...</div>
+        </div>
+        <div class="card">
+          <h2>Banner</h2>
+          <div class="stat" id="bannerTitle">Loading...</div>
+        </div>
+        <div class="card">
+          <h2>Source</h2>
+          <div class="stat" id="sourceUrl">Loading...</div>
+        </div>
+        <div class="card">
+          <h2>Last Updated</h2>
+          <div class="stat" id="lastUpdatedAt">Loading...</div>
+        </div>
+      </div>
+
+      <div class="status" id="status"></div>
+      <div class="panel">
+        <pre id="json">Loading site.json...</pre>
+      </div>
+      <div class="footer">
+        Powered by the SentinelBot release pipeline.
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      releaseId: document.getElementById("releaseId"),
+      bannerTitle: document.getElementById("bannerTitle"),
+      sourceUrl: document.getElementById("sourceUrl"),
+      lastUpdatedAt: document.getElementById("lastUpdatedAt"),
+      json: document.getElementById("json"),
+      status: document.getElementById("status")
+    };
+
+    function setStatus(message) {
+      state.status.textContent = message;
+      state.status.style.display = "block";
+    }
+
+    function formatValue(value, fallback = "Not set") {
+      return value ? value : fallback;
+    }
+
+    async function loadSite() {
+      try {
+        const res = await fetch("./site.json", { cache: "no-store" });
+        if (!res.ok) throw new Error("site.json fetch failed with HTTP " + res.status);
+        const site = await res.json();
+        const banner = site?.homepage?.banner || {};
+        const release = site?.release || {};
+
+        state.releaseId.textContent = formatValue(banner.activeReleaseId || release.id);
+        state.bannerTitle.textContent = formatValue(banner.title);
+        state.sourceUrl.textContent = formatValue(banner.sourceUrl);
+        state.lastUpdatedAt.textContent = formatValue(site?.homepage?.lastUpdatedAt || site?.generatedAt);
+        state.json.textContent = JSON.stringify(site, null, 2);
+        setStatus("site.json loaded successfully.");
+      } catch (error) {
+        setStatus(error.message);
+        state.json.textContent = JSON.stringify({
+          error: error.message,
+          hint: "Ensure site.json is present in the GitHub Pages deploy artifact."
+        }, null, 2);
+        state.releaseId.textContent = "Unavailable";
+        state.bannerTitle.textContent = "Unavailable";
+        state.sourceUrl.textContent = "Unavailable";
+        state.lastUpdatedAt.textContent = "Unavailable";
+      }
+    }
+
+    loadSite();
+  </script>
+</body>
+</html>

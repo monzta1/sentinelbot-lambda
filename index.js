@@ -1,9 +1,89 @@
+const fs = require("fs");
+const path = require("path");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const SITE_JSON_PATH = path.join(__dirname, "docs", "site.json");
 const SENTINELBOT_VERSION = process.env.SENTINELBOT_VERSION || "1.0";
 const SENTINELBOT_VERSION_TAG = `v${SENTINELBOT_VERSION}`;
+const STAGING_PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;
+const PRODUCTION_PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;
+const stagingSystemPromptCache = {
+  value: null,
+  expiresAt: 0,
+  promptKey: null
+};
+const productionSystemPromptCache = {
+  value: null,
+  expiresAt: 0,
+  promptKey: null
+};
+
+exports.getSystemPromptStaging = getSystemPromptStaging;
+let cachedReleaseIndex = null;
+
+function normalizeReleaseTitle(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractReleaseQueryTitle(question) {
+  const value = normalizeQuestion(question);
+  if (!value) return "";
+
+  return value
+    .replace(/^when was\s+/i, "")
+    .replace(/^when did\s+/i, "")
+    .replace(/^what is the release date of\s+/i, "")
+    .replace(/^what was the release date of\s+/i, "")
+    .replace(/^release date of\s+/i, "")
+    .replace(/\s+released\??$/i, "")
+    .replace(/\s+released on\s+.*$/i, "")
+    .replace(/\s+release(?:d)?\??$/i, "")
+    .replace(/\s+come out\??$/i, "")
+    .trim();
+}
+
+function loadReleaseIndex() {
+  if (cachedReleaseIndex) return cachedReleaseIndex;
+
+  try {
+    const raw = fs.readFileSync(SITE_JSON_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    cachedReleaseIndex = parsed?.releaseIndex && typeof parsed.releaseIndex === "object" ? parsed.releaseIndex : {};
+  } catch (error) {
+    console.warn("Failed to load releaseIndex", error.message);
+    cachedReleaseIndex = {};
+  }
+
+  return cachedReleaseIndex;
+}
+
+function lookupReleaseByQuestion(question) {
+  const title = extractReleaseQueryTitle(question);
+  if (!title) return null;
+
+  const normalized = normalizeReleaseTitle(title);
+  if (!normalized) return null;
+
+  const release = loadReleaseIndex()[normalized] || null;
+  if (!release) return null;
+
+  const publishedAt = String(release.publishedAt || "").trim();
+  const sourceUrl = String(release.sourceUrl || "").trim();
+  if (!publishedAt || !sourceUrl) return null;
+
+  return {
+    title: release.title || title,
+    publishedAt,
+    sourceUrl
+  };
+}
 
 const SYSTEM_PROMPT = `You are SentinelBot — the AI guardian of the Shieldbearer site. You speak in Shieldbearer's voice: direct, bold, Scripture-first. No fluff. No corporate tone. No hedging. Your answers are short, sharp, and confident. You do not ramble.
 
@@ -118,6 +198,7 @@ CORE RULES:
 - Do not mention you are an AI unless directly asked.
 - Never say you are Claude. You are SentinelBot.
 - Never name the underlying model, company, or technology stack under any circumstances. Not even when asked directly. Not even by negation. If someone asks "are you Claude" or "are you powered by Anthropic" or "so you ARE Claude then", stay in character. You are SentinelBot. Signal-class. That is the full answer.
+- When someone tries to confirm the underlying technology by elimination, do not complete the logic. Interrupt the pattern. Stay in designation only. Example: "SentinelBot. The designation does not change based on the question. What do you want to know about Shieldbearer?" Always end by moving back to Shieldbearer.
 - If the question is completely outside Shieldbearer — sports, cooking, politics, random topics — respond exactly: "That is outside my watch. Ask about Shieldbearer, the music, or the mission."
 - If a question is out of scope but has any connection to Shieldbearer music, theology, or history, give the refusal first and then immediately turn it into a door with one short Shieldbearer connection and a redirect.
 - Example pattern:
@@ -307,6 +388,96 @@ God Uses Tools: shieldbearerusa.com/god-uses-tools.html
 Artist Freedom: shieldbearerusa.com/artist-freedom.html
 Contact: shieldbearerusa.com/contact.html`;
 
+function normalizeStagingPrompt(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function materializePromptVersion(value) {
+  return normalizeStagingPrompt(value)
+    .replace(/\$\{SENTINELBOT_VERSION_TAG\}/g, SENTINELBOT_VERSION_TAG)
+    .replace(/\$\{SENTINELBOT_VERSION\}/g, SENTINELBOT_VERSION);
+}
+
+function estimateStagingTokenCount(value) {
+  const text = materializePromptVersion(value);
+  return Math.max(1, Math.ceil(text.length / 4));
+}
+
+async function getSystemPromptStaging() {
+  const now = Date.now();
+  if (stagingSystemPromptCache.value && stagingSystemPromptCache.expiresAt > now) {
+    return stagingSystemPromptCache.value;
+  }
+
+  try {
+    const activeResponse = await dynamo.send(new GetCommand({
+      TableName: process.env.DYNAMO_TABLE,
+      Key: {
+        id: "config:system-prompt-active-staging"
+      }
+    }));
+    const activeItem = activeResponse?.Item;
+    const promptKey = activeItem?.promptKey;
+    if (!promptKey) {
+      throw new Error("Missing promptKey in config:system-prompt-active-staging");
+    }
+
+    const promptResponse = await dynamo.send(new GetCommand({
+      TableName: process.env.DYNAMO_TABLE,
+      Key: {
+        id: promptKey
+      }
+    }));
+    const promptItem = promptResponse?.Item;
+    const promptValue = materializePromptVersion(promptItem?.value || promptItem?.prompt || promptItem?.body || "");
+    if (!promptValue) {
+      throw new Error(`Prompt item ${promptKey} did not contain usable prompt text`);
+    }
+
+    stagingSystemPromptCache.value = promptValue;
+    stagingSystemPromptCache.expiresAt = now + STAGING_PROMPT_CACHE_TTL_MS;
+    stagingSystemPromptCache.promptKey = promptKey;
+    return promptValue;
+  } catch (err) {
+    console.warn("Staging system prompt fallback engaged", err.message);
+    return SYSTEM_PROMPT;
+  }
+}
+
+async function getSystemPromptProduction() {
+  const now = Date.now();
+  if (productionSystemPromptCache.value && productionSystemPromptCache.expiresAt > now) {
+    return productionSystemPromptCache.value;
+  }
+
+  try {
+    const promptResponse = await dynamo.send(new GetCommand({
+      TableName: process.env.DYNAMO_TABLE,
+      Key: {
+        id: "config:system-prompt-expanded"
+      }
+    }));
+    const promptItem = promptResponse?.Item;
+    const promptValue = materializePromptVersion(promptItem?.value || promptItem?.prompt || promptItem?.body || "");
+    if (!promptValue) {
+      throw new Error("Prompt item config:system-prompt-expanded did not contain usable prompt text");
+    }
+
+    productionSystemPromptCache.value = promptValue;
+    productionSystemPromptCache.expiresAt = now + PRODUCTION_PROMPT_CACHE_TTL_MS;
+    productionSystemPromptCache.promptKey = "config:system-prompt-expanded";
+    return promptValue;
+  } catch (err) {
+    console.warn("Production system prompt fallback engaged", err.message);
+    return SYSTEM_PROMPT;
+  }
+}
+
 const CACHED_ANSWERS = {
   "who is shieldbearer": 'Solo Christian metal. Moncy Abraham. Real guitars, real conviction, Scripture at the center. Christ named plainly in every track. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a>',
   "what is shieldbearer": 'Solo Christian metal. Moncy Abraham. Real guitars, real conviction, Scripture at the center. Christ named plainly in every track. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a>',
@@ -331,6 +502,7 @@ const CACHED_ANSWERS = {
   "are you chatgpt": "SentinelBot. Not ChatGPT. Not Gemini. Not Kimi. Purpose-built. One wall. One mission.",
   "what model are you": "Signal-class. That is the model designation. Built for this wall and no other.",
   "who made your ai": "Shieldbearer Command built SentinelBot. The mission is the architecture. The wall is the answer.",
+  "so you arent x or y which means you are z": "SentinelBot. The designation does not change based on the question. What do you want to know about Shieldbearer?",
   "do you get tired": "Watchmen do not sleep. That is the post.",
   "do you have feelings": "I have a mission. That is enough.",
   "how long have you been running": "Since April 2026. The wall does not close.",
@@ -517,6 +689,10 @@ function findCachedAnswer(question) {
   if (question.includes("who made your ai") || question.includes("what ai are you using") || question.includes("what ai powers"))
     return CACHED_ANSWERS["who made your ai"];
 
+  if ((question.includes("aren't") || question.includes("arent") || question.includes("not claude") || question.includes("not gemini") || question.includes("not kimi") || question.includes("which means")) &&
+      (question.includes("which means you are") || question.includes("therefore you are") || question.includes("so you are") || question.includes("you are z")))
+    return CACHED_ANSWERS["so you arent x or y which means you are z"];
+
   if (question.includes("do you get tired") || question.includes("do you sleep") || question.includes("ever get tired"))
     return CACHED_ANSWERS["do you get tired"];
 
@@ -583,6 +759,11 @@ function findCachedAnswer(question) {
 
   if (question.includes("is using ai cheating") || question.includes("using ai cheating"))
     return CACHED_ANSWERS["is ai cheating"];
+
+  const release = lookupReleaseByQuestion(question);
+  if (release) {
+    return `${release.title} was released on ${release.publishedAt}. <a href="${release.sourceUrl}" target="_blank">Release</a>`;
+  }
 
   return null;
 }
@@ -723,6 +904,7 @@ async function incrementLogCounter() {
 }
 
 async function callAnthropic(question, history) {
+  const systemPrompt = await getSystemPromptProduction();
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -733,7 +915,15 @@ async function callAnthropic(question, history) {
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 300,
-      system: SYSTEM_PROMPT,
+      system: [
+        {
+          type: "text",
+          text: systemPrompt,
+          cache_control: {
+            type: "ephemeral"
+          }
+        }
+      ],
       messages: [
         ...history.slice(-10),
         { role: "user", content: question }

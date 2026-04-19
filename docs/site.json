@@ -1,0 +1,19 @@
+{
+  "generatedAt": "2026-04-18T00:00:00.000Z",
+  "source": "sentinelbot-event-consumer",
+  "homepage": {
+    "banner": {
+      "title": "SentinelBot Release State",
+      "image": null,
+      "sourceUrl": "https://shieldbearerusa.com/sentinelbot.html",
+      "activeReleaseId": "bootstrap"
+    },
+    "lastUpdatedAt": "2026-04-18T00:00:00.000Z"
+  },
+  "release": {
+    "id": "bootstrap",
+    "source": "youtube",
+    "publishedAt": "2026-04-18T00:00:00.000Z"
+  },
+  "releaseIndex": {}
+}
