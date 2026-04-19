@@ -1,4 +1,10 @@
 {
+  "scripts": {
+    "build:song-index": "node scripts/build-song-index.js",
+    "backfill:songs-table": "node scripts/backfill-songs-table.js",
+    "sync:songs-table": "SONGS_BACKFILL_SOURCE=eventstream SONGS_REPLACE_EXISTING=true node scripts/backfill-songs-table.js",
+    "verify:songs-table": "node scripts/verify-songs-table.js"
+  },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1032.0",
     "@aws-sdk/lib-dynamodb": "^3.1032.0"

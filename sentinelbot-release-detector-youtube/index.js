@@ -4,6 +4,7 @@ const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = requir
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
 const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID || "";
 const MAX_SCAN_RESULTS = Math.max(1, Number.parseInt(process.env.YOUTUBE_RELEASE_SCAN_LIMIT || "100", 10) || 100);
@@ -24,6 +25,15 @@ function normalizeText(value) {
     .map((line) => line.trim())
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function normalizeSongTitle(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -200,6 +210,32 @@ function buildReleaseEventItem(video) {
   };
 }
 
+function buildSongItem(video) {
+  const timestamp = nowIso();
+  const title = normalizeText(video.title || "");
+  const normalizedTitle = normalizeSongTitle(title);
+  const canonicalTitle = normalizedTitle.replace(/\s+(official|lyric|video|short|shorts|chorus)\b.*$/i, "").trim() || normalizedTitle;
+  const meaningUrl = `https://shieldbearerusa.com/song-meanings.html#${normalizedTitle.replace(/\s+/g, "-")}`;
+
+  return {
+    songId: video.videoId,
+    pk: video.videoId,
+    title,
+    normalizedTitle,
+    canonicalTitle,
+    normalizedCanonicalTitle: normalizeSongTitle(canonicalTitle),
+    meaningUrl,
+    publishedAt: video.publishedAt || "",
+    youtubeUrl: video.sourceUrl || "",
+    duration: video.duration || "",
+    durationSeconds: Number(video.durationSeconds || 0),
+    type: "official_release",
+    source: "youtube",
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+
 function buildEventStreamItem(releaseEvent) {
   const streamKey = `${releaseEvent.publishedAt}#${releaseEvent.source}#${releaseEvent.id}`;
   const timestamp = nowIso();
@@ -239,6 +275,23 @@ async function writeEventStream(releaseEvent) {
       TableName: TABLE_NAME,
       Item: item,
       ConditionExpression: "attribute_not_exists(id)"
+    }));
+    return { created: true, item };
+  } catch (error) {
+    if (error?.name === "ConditionalCheckFailedException") {
+      return { created: false, item, duplicate: true };
+    }
+    throw error;
+  }
+}
+
+async function writeSongItem(video) {
+  const item = buildSongItem(video);
+  try {
+    await dynamo.send(new PutCommand({
+      TableName: SONGS_TABLE_NAME,
+      Item: item,
+      ConditionExpression: "attribute_not_exists(songId)"
     }));
     return { created: true, item };
   } catch (error) {
@@ -358,6 +411,15 @@ exports.handler = async () => {
       const result = await writeReleaseEvent(video);
       if (result.created) {
         events.push(result.item);
+        try {
+          await writeSongItem(video);
+        } catch (error) {
+          logStage("song-table-write-failed", {
+            videoId: video.videoId,
+            title: video.title,
+            error: error.message
+          });
+        }
         await writeEventStream(result.item);
       } else if (result.duplicate) {
         duplicateCount += 1;
@@ -422,5 +484,8 @@ module.exports = {
   fetchVideoDetails,
   buildReleaseEventItem,
   getReleaseMetadata,
-  isReleaseCandidate
+  isReleaseCandidate,
+  buildSongItem,
+  writeSongItem,
+  normalizeSongTitle
 };

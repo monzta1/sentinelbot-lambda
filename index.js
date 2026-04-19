@@ -1,10 +1,13 @@
 const fs = require("fs");
 const path = require("path");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const SITE_JSON_PATH = path.join(__dirname, "docs", "site.json");
+const SONG_INDEX_PATH = path.join(__dirname, "docs", "song-index.json");
+const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
+const SONGS_TABLE_TITLE_INDEX = process.env.SONGS_TABLE_TITLE_INDEX || "normalizedTitle-index";
 const SENTINELBOT_VERSION = process.env.SENTINELBOT_VERSION || "1.0";
 const SENTINELBOT_VERSION_TAG = `v${SENTINELBOT_VERSION}`;
 const STAGING_PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -21,7 +24,15 @@ const productionSystemPromptCache = {
 };
 
 exports.getSystemPromptStaging = getSystemPromptStaging;
+exports.loadSongIndex = loadSongIndex;
+exports.lookupSongByQuestion = lookupSongByQuestion;
+exports.lookupSongByQuestionFromSongsTable = lookupSongByQuestionFromSongsTable;
+exports.lookupSongStrictResponse = lookupSongStrictResponse;
+exports.normalizeSongTitle = normalizeSongTitle;
 let cachedReleaseIndex = null;
+let cachedSongIndex = null;
+let songsTableAvailable = null;
+let songsTableAvailabilityPromise = null;
 
 function normalizeReleaseTitle(value) {
   return String(value || "")
@@ -32,20 +43,67 @@ function normalizeReleaseTitle(value) {
     .trim();
 }
 
+function normalizeSongTitle(value) {
+  return normalizeReleaseTitle(value);
+}
+
+function isShortFormTitle(value) {
+  const normalized = normalizeQuestion(value);
+  return normalized.includes("#shorts") ||
+    normalized.includes("shorts") ||
+    normalized.includes("short");
+}
+
+function scoreSongCandidate(candidate, normalizedTitle) {
+  const title = normalizeSongTitle(candidate?.title || "");
+  const canonicalTitle = normalizeSongTitle(candidate?.canonicalTitle || "");
+  const normalizedCanonicalTitle = normalizeSongTitle(candidate?.normalizedCanonicalTitle || "");
+  const sameTitle = title === normalizedTitle;
+  const sameCanonicalTitle = canonicalTitle === normalizedTitle || normalizedCanonicalTitle === normalizedTitle;
+  const titleContainsQuery = normalizedTitle && title.includes(normalizedTitle);
+  const queryContainsTitle = normalizedTitle && normalizedTitle.includes(title);
+  const source = String(candidate?.source || "").toLowerCase();
+  const type = String(candidate?.type || "").toLowerCase();
+  const hasPublishedAt = Boolean(String(candidate?.publishedAt || "").trim());
+  const isShort = isShortFormTitle(candidate?.title || "");
+
+  return [
+    source === "youtube" ? 100 : 0,
+    type === "official_release" ? 50 : 0,
+    sameTitle ? 40 : 0,
+    sameCanonicalTitle ? 80 : 0,
+    titleContainsQuery || queryContainsTitle ? 20 : 0,
+    hasPublishedAt ? 10 : 0,
+    isShort && !sameCanonicalTitle ? -100 : 0
+  ].reduce((sum, value) => sum + value, 0);
+}
+
+function selectBestSongCandidate(items, normalizedTitle) {
+  const candidates = Array.isArray(items) ? items : [];
+  return candidates
+    .map((candidate) => ({
+      candidate,
+      score: scoreSongCandidate(candidate, normalizedTitle)
+    }))
+    .sort((a, b) => b.score - a.score)
+    .map((entry) => entry.candidate)[0] || null;
+}
+
 function extractReleaseQueryTitle(question) {
   const value = normalizeQuestion(question);
   if (!value) return "";
 
   return value
-    .replace(/^when was\s+/i, "")
-    .replace(/^when did\s+/i, "")
-    .replace(/^what is the release date of\s+/i, "")
-    .replace(/^what was the release date of\s+/i, "")
-    .replace(/^release date of\s+/i, "")
+    .replace(/^(when was|when did|what is the release date of|what was the release date of|release date of|what is|what's|tell me about|meaning of|lyrics for|lyrics of|scripture behind|story behind)\s+/i, "")
     .replace(/\s+released\??$/i, "")
     .replace(/\s+released on\s+.*$/i, "")
     .replace(/\s+release(?:d)?\??$/i, "")
     .replace(/\s+come out\??$/i, "")
+    .replace(/\s+about\??$/i, "")
+    .replace(/\s+meaning\??$/i, "")
+    .replace(/\s+lyrics\??$/i, "")
+    .replace(/\s+scripture\??$/i, "")
+    .replace(/\s+story\??$/i, "")
     .trim();
 }
 
@@ -64,6 +122,264 @@ function loadReleaseIndex() {
   return cachedReleaseIndex;
 }
 
+function loadSongIndex() {
+  if (cachedSongIndex) return cachedSongIndex;
+
+  try {
+    const raw = fs.readFileSync(SONG_INDEX_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    cachedSongIndex = parsed && typeof parsed === "object" ? {
+      ...parsed,
+      byTitle: parsed.byTitle && typeof parsed.byTitle === "object" ? parsed.byTitle : {},
+      bySlug: parsed.bySlug && typeof parsed.bySlug === "object" ? parsed.bySlug : {},
+      songs: Array.isArray(parsed.songs) ? parsed.songs : []
+    } : {
+      byTitle: {},
+      bySlug: {},
+      songs: []
+    };
+  } catch (error) {
+    console.warn("Failed to load songIndex", error.message);
+    cachedSongIndex = {
+      byTitle: {},
+      bySlug: {},
+      songs: []
+    };
+  }
+
+  return cachedSongIndex;
+}
+
+async function checkSongsTableAvailability() {
+  try {
+    await dynamo.send(new GetCommand({
+      TableName: SONGS_TABLE_NAME,
+      Key: {
+        songId: "__healthcheck__"
+      }
+    }));
+    songsTableAvailable = true;
+  } catch (error) {
+    songsTableAvailable = false;
+    console.warn("SongsTable unavailable - strict mode degraded", error.message);
+  }
+
+  return songsTableAvailable;
+}
+
+songsTableAvailabilityPromise = checkSongsTableAvailability();
+
+async function getSongsTableAvailability() {
+  if (songsTableAvailable !== null) return songsTableAvailable;
+  if (!songsTableAvailabilityPromise) {
+    songsTableAvailabilityPromise = checkSongsTableAvailability();
+  }
+  return songsTableAvailabilityPromise;
+}
+
+async function lookupSongByQuestionFromSongsTable(question) {
+  const available = await getSongsTableAvailability();
+  if (!available) return null;
+
+  const title = extractReleaseQueryTitle(question);
+  if (!title) return null;
+
+  const normalizedTitle = normalizeSongTitle(title);
+  if (!normalizedTitle) return null;
+
+  try {
+    const queryResponse = await dynamo.send(new QueryCommand({
+      TableName: SONGS_TABLE_NAME,
+      IndexName: SONGS_TABLE_TITLE_INDEX,
+      KeyConditionExpression: "#normalizedTitle = :normalizedTitle",
+      ExpressionAttributeNames: {
+        "#normalizedTitle": "normalizedTitle"
+      },
+      ExpressionAttributeValues: {
+        ":normalizedTitle": normalizedTitle
+      },
+      Limit: 25,
+      ScanIndexForward: false
+    }));
+
+    let item = selectBestSongCandidate(queryResponse?.Items, normalizedTitle);
+
+    if (!item) {
+      const scanResponse = await dynamo.send(new ScanCommand({
+        TableName: SONGS_TABLE_NAME,
+        FilterExpression: "contains(#title, :query) OR contains(#normalizedTitle, :query)",
+        ExpressionAttributeNames: {
+          "#title": "title",
+          "#normalizedTitle": "normalizedTitle",
+          "#source": "source",
+          "#type": "type",
+          "#meaningUrl": "meaningUrl",
+          "#summary": "summary",
+          "#thesis": "thesis"
+        },
+        ExpressionAttributeValues: {
+          ":query": normalizedTitle
+        },
+        ProjectionExpression: "songId, title, normalizedTitle, canonicalTitle, normalizedCanonicalTitle, publishedAt, youtubeUrl, #source, #type, #meaningUrl, #summary, #thesis"
+      }));
+      item = selectBestSongCandidate(scanResponse?.Items, normalizedTitle);
+    }
+
+    if (!item) return null;
+
+    return {
+      title: item.title || title,
+      canonicalTitle: String(item.canonicalTitle || item.title || title).trim(),
+      normalizedCanonicalTitle: normalizeSongTitle(item.normalizedCanonicalTitle || item.canonicalTitle || item.title || title),
+      meaningUrl: String(item.meaningUrl || `https://shieldbearerusa.com/song-meanings.html#${normalizeSongTitle(item.title || title).replace(/\s+/g, "-")}`).trim(),
+      summary: String(item.summary || item.thesis || item.description || "").trim(),
+      releaseLabel: String(item.releaseLabel || "").trim(),
+      publishedAt: String(item.publishedAt || "").trim(),
+      sourceUrl: String(item.youtubeUrl || item.sourceUrl || "").trim(),
+      songId: String(item.songId || item.pk || "").trim()
+    };
+  } catch (error) {
+    console.warn("SongsTable lookup unavailable", error.message);
+    return null;
+  }
+}
+
+async function lookupSongStrictResponse(question) {
+  const available = await getSongsTableAvailability();
+  if (!available) {
+    return null;
+  }
+
+  const song = await lookupSongByQuestionFromSongsTable(question);
+  if (!song || !song.publishedAt) return null;
+
+  console.log(JSON.stringify({
+    lookupSource: "songs-table",
+    matchedSongId: song.songId || null,
+    responseMode: "strict-lookup"
+  }));
+
+  return song.title ? `${song.title} — ${song.publishedAt}` : song.publishedAt;
+}
+
+async function resolveSongLookup(question) {
+  const available = await getSongsTableAvailability();
+  const strictSongResponse = available ? await lookupSongStrictResponse(question) : null;
+  if (strictSongResponse) {
+    return {
+      answer: strictSongResponse,
+      lookupMode: "strict-lookup",
+      fallbackReason: null,
+      songsTableAvailable: available
+    };
+  }
+
+  if (!available) {
+    const song = await lookupSongByQuestion(question);
+    if (song) {
+      if (isReleaseQuestion(question)) {
+        const answer = song.publishedAt
+          ? `${song.title} was released on ${song.publishedAt}. <a href="${song.sourceUrl}" target="_blank">Release</a>`
+          : `${song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
+        return {
+          answer,
+          lookupMode: "degraded-no-songs-table",
+          fallbackReason: "songs_table_unavailable",
+          songsTableAvailable: available
+        };
+      }
+
+      if (isSongMeaningQuestion(question)) {
+        const summary = song.summary ? `${song.summary} ` : "";
+        return {
+          answer: `${song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+          lookupMode: "degraded-no-songs-table",
+          fallbackReason: "songs_table_unavailable",
+          songsTableAvailable: available
+        };
+      }
+
+      return {
+        answer: `${song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+        lookupMode: "degraded-no-songs-table",
+        fallbackReason: "songs_table_unavailable",
+        songsTableAvailable: available
+      };
+    }
+
+    return {
+      answer: null,
+      lookupMode: "degraded-no-songs-table",
+      fallbackReason: "songs_table_unavailable",
+      songsTableAvailable: available
+    };
+  }
+
+  const song = await lookupSongByQuestion(question);
+  if (song) {
+    if (isReleaseQuestion(question)) {
+      if (song.publishedAt) {
+        return {
+          answer: `${song.canonicalTitle || song.title} was released on ${song.publishedAt}. <a href="${song.sourceUrl}" target="_blank">Release</a>`,
+          lookupMode: "catalog-lookup",
+          fallbackReason: null,
+          songsTableAvailable: available
+        };
+      }
+
+      if (song.releaseLabel) {
+        return {
+          answer: `${song.canonicalTitle || song.title} is listed as ${song.releaseLabel}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+          lookupMode: "catalog-lookup",
+          fallbackReason: null,
+          songsTableAvailable: available
+        };
+      }
+
+      return {
+        answer: `${song.canonicalTitle || song.title} is indexed in the catalog, but I do not have a release timestamp yet. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+        lookupMode: "catalog-lookup",
+        fallbackReason: null,
+        songsTableAvailable: available
+      };
+    }
+
+    if (isSongMeaningQuestion(question)) {
+      const summary = song.summary ? `${song.summary} ` : "";
+      return {
+        answer: `${song.canonicalTitle || song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+        lookupMode: "catalog-lookup",
+        fallbackReason: null,
+        songsTableAvailable: available
+      };
+    }
+
+    return {
+      answer: `${song.canonicalTitle || song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+      lookupMode: "catalog-lookup",
+      fallbackReason: null,
+      songsTableAvailable: available
+    };
+  }
+
+  const release = lookupReleaseByQuestion(question);
+  if (release) {
+    return {
+      answer: `${release.title} was released on ${release.publishedAt}. <a href="${release.sourceUrl}" target="_blank">Release</a>`,
+      lookupMode: "release-index",
+      fallbackReason: null,
+      songsTableAvailable: available
+    };
+  }
+
+  return {
+    answer: null,
+    lookupMode: "miss",
+    fallbackReason: "song_not_found",
+    songsTableAvailable: available
+  };
+}
+
 function lookupReleaseByQuestion(question) {
   const title = extractReleaseQueryTitle(question);
   if (!title) return null;
@@ -80,6 +396,77 @@ function lookupReleaseByQuestion(question) {
 
   return {
     title: release.title || title,
+    publishedAt,
+    sourceUrl
+  };
+}
+
+function isReleaseQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  return normalized.includes("when was") ||
+    normalized.includes("when did") ||
+    normalized.includes("release date") ||
+    normalized.includes("released") ||
+    normalized.includes("come out");
+}
+
+function isSongMeaningQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  return normalized.includes("what is") ||
+    normalized.includes("what's") ||
+    normalized.includes("tell me about") ||
+    normalized.includes("meaning") ||
+    normalized.includes("lyrics") ||
+    normalized.includes("scripture") ||
+    normalized.includes("story") ||
+    normalized.includes("about");
+}
+
+function isSongLookupQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  const title = extractReleaseQueryTitle(question);
+
+  if (!normalized || !title) return false;
+
+  const normalizedTitle = normalizeReleaseTitle(title);
+  const songIndex = loadSongIndex();
+  const releaseIndex = loadReleaseIndex();
+  const knownSong = Boolean(
+    songIndex.byTitle?.[normalizedTitle] ||
+    songIndex.bySlug?.[normalizedTitle] ||
+    releaseIndex[normalizedTitle]
+  );
+  const explicitSongIntent = /\b(release(?:d| date)?|when was|when did|lyrics?|meaning|story behind|scripture behind|song|track|music|single|official|come out|dossier)\b/i.test(normalized);
+  const aboutIntent = normalized.includes("about") && normalizedTitle.split(" ").length >= 2;
+
+  return knownSong || explicitSongIntent || aboutIntent;
+}
+
+async function lookupSongByQuestion(question) {
+  const title = extractReleaseQueryTitle(question);
+  if (!title) return null;
+
+  const normalized = normalizeReleaseTitle(title);
+  if (!normalized) return null;
+
+  const tableSong = await lookupSongByQuestionFromSongsTable(question);
+  if (tableSong) return tableSong;
+
+  const index = loadSongIndex();
+  const song = index.byTitle?.[normalized] || index.bySlug?.[normalized] || null;
+  if (!song) return null;
+
+  const meaningUrl = String(song.meaningUrl || song.songUrl || `https://shieldbearerusa.com/song-meanings.html#${song.slug || song.id || normalized}`).trim();
+  const summary = String(song.thesis || song.meaningSummary || song.reference || "").trim();
+  const releaseLabel = String(song.releaseLabel || "").trim();
+  const publishedAt = String(song.publishedAt || "").trim();
+  const sourceUrl = String(song.sourceUrl || song.actions?.youtube || song.actions?.spotify || meaningUrl).trim();
+
+  return {
+    title: song.title || title,
+    meaningUrl,
+    summary,
+    releaseLabel,
     publishedAt,
     sourceUrl
   };
@@ -644,7 +1031,7 @@ function normalizeQuestion(q) {
   return (q || "").toLowerCase().trim();
 }
 
-function findCachedAnswer(question) {
+async function findCachedAnswer(question) {
   if (!question) return null;
 
   for (const route of FAQ_ROUTES) {
@@ -760,9 +1147,36 @@ function findCachedAnswer(question) {
   if (question.includes("is using ai cheating") || question.includes("using ai cheating"))
     return CACHED_ANSWERS["is ai cheating"];
 
+  const strictSongResponse = await lookupSongStrictResponse(question);
+  if (strictSongResponse) {
+    return strictSongResponse;
+  }
+
   const release = lookupReleaseByQuestion(question);
   if (release) {
     return `${release.title} was released on ${release.publishedAt}. <a href="${release.sourceUrl}" target="_blank">Release</a>`;
+  }
+
+  const song = await lookupSongByQuestion(question);
+  if (song) {
+    if (isReleaseQuestion(question)) {
+      if (song.publishedAt) {
+        return `${song.title} was released on ${song.publishedAt}. <a href="${song.sourceUrl}" target="_blank">Release</a>`;
+      }
+
+      if (song.releaseLabel) {
+        return `${song.title} is listed as ${song.releaseLabel}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
+      }
+
+      return `${song.title} is indexed in the catalog, but I do not have a release timestamp yet. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
+    }
+
+    if (isSongMeaningQuestion(question)) {
+      const summary = song.summary ? `${song.summary} ` : "";
+      return `${song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
+    }
+
+    return `${song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
   }
 
   return null;
@@ -851,6 +1265,9 @@ function buildLogItem({
   answer,
   page,
   source,
+  lookupMode,
+  fallbackReason,
+  songsTableAvailable,
   historyLength,
   responseTimeMs,
   status,
@@ -871,6 +1288,9 @@ function buildLogItem({
     answer,
     page,
     source,
+    lookupMode: lookupMode || null,
+    fallbackReason: fallbackReason || null,
+    songsTableAvailable: typeof songsTableAvailable === "boolean" ? songsTableAvailable : null,
     historyLength,
     responseTimeMs,
     status,
@@ -993,20 +1413,56 @@ exports.handler = async (event) => {
       };
     }
 
-    const cached = findCachedAnswer(question);
-    let answer = cached;
-    let status = cached ? "success" : "success";
-    let source = cached ? "app-cache-hit" : "anthropic";
+    const isSongQuestion = isSongLookupQuestion(question);
+    let answer = null;
+    let status = "success";
+    let source = "anthropic";
     let errorMessage = null;
+    let lookupMode = null;
+    let fallbackReason = null;
+    let songsTableIsAvailable = songsTableAvailable === true;
 
-    if (!answer) {
-      try {
-        answer = await callAnthropic(question, history);
-      } catch (err) {
-        answer = "Signal lost. Try again.";
-        status = "error";
-        source = "error";
-        errorMessage = err.message;
+    if (isSongQuestion) {
+      const resolved = await resolveSongLookup(question);
+      answer = resolved.answer;
+      source = answer ? "app-cache-hit" : source;
+      lookupMode = resolved.lookupMode || null;
+      fallbackReason = resolved.fallbackReason || null;
+      songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
+
+      if (!answer) {
+        if (!songsTableIsAvailable) {
+          answer = "SongsTable unavailable. Ask again later or check the catalog.";
+          status = "error";
+          source = "error";
+          errorMessage = "SongsTable unavailable";
+          lookupMode = lookupMode || "degraded-no-songs-table";
+          fallbackReason = fallbackReason || "songs_table_unavailable";
+          console.warn(JSON.stringify({
+            songsTableAvailable: false,
+            lookupMode,
+            fallbackReason,
+            lookupSource: "songs-table",
+            responseMode: "degraded-no-songs-table"
+          }));
+        } else {
+          answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
+          source = "app-cache-hit";
+          lookupMode = lookupMode || "song-miss";
+          fallbackReason = fallbackReason || "song_not_found";
+        }
+      }
+    } else {
+      answer = await findCachedAnswer(question);
+      if (!answer) {
+        try {
+          answer = await callAnthropic(question, history);
+        } catch (err) {
+          answer = "Signal lost. Try again.";
+          status = "error";
+          source = "error";
+          errorMessage = err.message;
+        }
       }
     }
 
@@ -1038,6 +1494,9 @@ exports.handler = async (event) => {
       answer,
       page,
       source,
+      lookupMode,
+      fallbackReason,
+      songsTableAvailable: songsTableIsAvailable,
       historyLength,
       responseTimeMs,
       status,
@@ -1069,6 +1528,9 @@ exports.handler = async (event) => {
         answer: "Signal lost. Try again.",
         page,
         source: "error",
+        lookupMode: "error",
+        fallbackReason: "handler_exception",
+        songsTableAvailable: songsTableAvailable === true,
         historyLength,
         responseTimeMs,
         status: "error",

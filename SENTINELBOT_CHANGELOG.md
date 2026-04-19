@@ -126,3 +126,13 @@ Versioning note:
 - Pinned the Pages workflow checkout to `GITHUB_SHA` with full fetch depth
 - Replaced git-metadata validation with filesystem-only checks for `docs/site.json`
 - Added a checksum gate and explicit artifact logging before the Pages build
+
+## v1.4.13 - April 2026
+- Added a dedicated song index snapshot for fast title-based lookup
+- Merged song metadata from the Shieldbearer catalog into a normalized local index
+- Wired SentinelBot to answer song meaning and release queries from the indexed catalog before falling back
+
+## v1.4.14 - April 2026
+- Added a dedicated `shieldbearer-songs` lookup table path for fast song metadata retrieval
+- Wrote valid release detections into the songs table without changing the EventStream audit path
+- Added a catalog backfill script so the song table can be populated from the existing song index
