@@ -657,9 +657,8 @@ function isSongLookupQuestion(question) {
     releaseIndex[normalizedTitle]
   );
   const explicitSongIntent = /\b(release(?:d| date)?|when was|when did|lyrics?|meaning|story behind|scripture behind|song|track|music|single|official|come out|dossier)\b/i.test(normalized);
-  const aboutIntent = normalized.includes("about") && normalizedTitle.split(" ").length >= 2;
 
-  return knownSong || explicitSongIntent || aboutIntent;
+  return knownSong || explicitSongIntent;
 }
 
 function buildSongContextSummary(song) {
@@ -1617,8 +1616,52 @@ async function incrementLogCounter() {
   }));
 }
 
-async function callAnthropic(question, history) {
+function buildSongAnthropicContext(song) {
+  if (!song) return null;
+
+  const title = String(song.canonicalTitle || song.title || "").trim();
+  if (!title) return null;
+
+  const context = song.songContext && typeof song.songContext === "object" ? song.songContext : {};
+  const lines = [`CATALOG DATA for the track "${title}":`];
+
+  if (song.publishedAt) lines.push(`- Released: ${song.publishedAt}`);
+  if (context.theme) lines.push(`- Theme: ${context.theme}`);
+  if (context.meaning) lines.push(`- Meaning: ${context.meaning}`);
+  if (context.spiritualTone) lines.push(`- Spiritual tone: ${context.spiritualTone}`);
+  if (Array.isArray(context.scriptureReferences) && context.scriptureReferences.length) {
+    lines.push(`- Scripture: ${context.scriptureReferences.join(", ")}`);
+  }
+  if (song.description) {
+    lines.push(`- Description: ${String(song.description).slice(0, 600)}`);
+  }
+  if (song.meaningUrl) lines.push(`- Dossier URL: ${song.meaningUrl}`);
+  if (song.sourceUrl) lines.push(`- Source URL: ${song.sourceUrl}`);
+
+  lines.push("");
+  lines.push("Answer the user's question about this specific track in Shieldbearer's voice. Use the scripture or theological angle that fits. If the catalog data is thin, answer honestly from the mission without filler. Do not invent facts not present above or in the system prompt. Include the dossier URL or source URL as an HTML anchor if you reference the track's page.");
+
+  return lines.join("\n");
+}
+
+async function callAnthropic(question, history, extraContext = null) {
   const systemPrompt = await getSystemPromptProduction();
+  const systemBlocks = [
+    {
+      type: "text",
+      text: systemPrompt,
+      cache_control: {
+        type: "ephemeral"
+      }
+    }
+  ];
+  if (extraContext) {
+    systemBlocks.push({
+      type: "text",
+      text: extraContext
+    });
+  }
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -1629,15 +1672,7 @@ async function callAnthropic(question, history) {
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 300,
-      system: [
-        {
-          type: "text",
-          text: systemPrompt,
-          cache_control: {
-            type: "ephemeral"
-          }
-        }
-      ],
+      system: systemBlocks,
       messages: [
         ...history.slice(-10),
         { role: "user", content: question }
@@ -1718,32 +1753,44 @@ exports.handler = async (event) => {
 
     if (isSongQuestion) {
       const resolved = await resolveSongLookup(question);
-      answer = resolved.answer;
-      source = answer ? "app-cache-hit" : source;
       lookupMode = resolved.lookupMode || null;
       fallbackReason = resolved.fallbackReason || null;
       songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
 
-      if (!answer) {
-        if (!songsTableIsAvailable) {
-          answer = "SongsTable unavailable. Ask again later or check the catalog.";
+      const structuredSongModes = new Set(["strict-lookup", "catalog-lookup", "release-index", "degraded-no-songs-table"]);
+      const hasStructuredAnswer = resolved.answer && structuredSongModes.has(resolved.lookupMode);
+
+      if (hasStructuredAnswer) {
+        answer = resolved.answer;
+        source = "app-cache-hit";
+      } else if (!songsTableIsAvailable && !resolved.answer) {
+        answer = "SongsTable unavailable. Ask again later or check the catalog.";
+        status = "error";
+        source = "error";
+        errorMessage = "SongsTable unavailable";
+        lookupMode = lookupMode || "degraded-no-songs-table";
+        fallbackReason = fallbackReason || "songs_table_unavailable";
+        console.warn(JSON.stringify({
+          songsTableAvailable: false,
+          lookupMode,
+          fallbackReason,
+          lookupSource: "songs-table",
+          responseMode: "degraded-no-songs-table"
+        }));
+      } else {
+        const song = await lookupSongByQuestion(question);
+        const extraContext = song ? buildSongAnthropicContext(song) : null;
+        try {
+          answer = await callAnthropic(question, history, extraContext);
+          source = extraContext ? "anthropic-song-context" : "anthropic";
+          lookupMode = extraContext ? "anthropic-with-db" : (lookupMode || "anthropic-only");
+        } catch (err) {
+          answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
           status = "error";
           source = "error";
-          errorMessage = "SongsTable unavailable";
-          lookupMode = lookupMode || "degraded-no-songs-table";
-          fallbackReason = fallbackReason || "songs_table_unavailable";
-          console.warn(JSON.stringify({
-            songsTableAvailable: false,
-            lookupMode,
-            fallbackReason,
-            lookupSource: "songs-table",
-            responseMode: "degraded-no-songs-table"
-          }));
-        } else {
-          answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
-          source = "app-cache-hit";
+          errorMessage = err.message;
           lookupMode = lookupMode || "song-miss";
-          fallbackReason = fallbackReason || "song_not_found";
+          fallbackReason = fallbackReason || "anthropic_failed";
         }
       }
     } else if (isSiteIntentQuestion(question)) {

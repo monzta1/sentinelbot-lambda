@@ -164,3 +164,8 @@ Versioning note:
 ## v1.4.20 - April 2026
 - Added human-readable song display titles to meaning responses
 - Kept the Song Context layer deterministic while making answers read like proper sentences
+
+## v1.4.21 - April 2026
+- Tightened song-intent routing so only real song queries enter the song path
+- Added Anthropic song-context prompts for catalog misses using stored song metadata
+- Preserved the deterministic lookup layers before any narrative fallback
