@@ -1,0 +1,68 @@
+name: SentinelBot GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "sentinelbot-pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync latest main
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+          echo "Deploying commit: $(git rev-parse HEAD)"
+
+      - name: Verify docs/site.json exists
+        run: |
+          if [ ! -s docs/site.json ]; then
+            echo "docs/site.json missing or empty"
+            exit 1
+          fi
+          echo "docs/site.json found and non-empty"
+
+      - name: Inspect site artifact
+        run: |
+          node -e 'const fs=require("fs"); const raw=fs.readFileSync("docs/site.json","utf8"); const data=JSON.parse(raw); console.log(JSON.stringify({ commitSha: process.env.GITHUB_SHA, siteJsonBytes: Buffer.byteLength(raw, "utf8"), eventCount: Array.isArray(data.events) ? data.events.length : 0, siteJsonPresent: true }, null, 2));'
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build Pages artifact
+        run: node scripts/build-pages.js
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: pages-dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
