@@ -11,6 +11,7 @@ const DYNAMO_TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-log
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const BACKFILL_SOURCE = String(process.env.SONGS_BACKFILL_SOURCE || "eventstream").toLowerCase();
 const REPLACE_EXISTING = String(process.env.SONGS_REPLACE_EXISTING || (BACKFILL_SOURCE === "eventstream" ? "true" : "false")).toLowerCase() === "true";
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
 
 function normalizeSongTitle(value) {
   return String(value || "")
@@ -24,6 +25,103 @@ function normalizeSongTitle(value) {
 function deriveCanonicalTitle(value) {
   const normalized = normalizeSongTitle(value);
   return normalized.replace(/\s+(official|lyric|video|short|shorts|chorus)\b.*$/i, "").trim() || normalized;
+}
+
+function normalizeDescription(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[^\p{L}\p{N}\s.,!?;:'"’()-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildSongContextFromDescription(description, title = "") {
+  const normalized = normalizeDescription(description);
+  const fallbackTitle = String(title || "").trim();
+  if (!normalized) {
+    return {
+      theme: "",
+      meaning: "",
+      spiritualTone: "",
+      scriptureReferences: [],
+      summary: ""
+    };
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !/https?:\/\//i.test(sentence))
+    .filter((sentence) => !/\b(spotify|youtube|subscribe|watch|stream|official video|out now|available now|follow|merch|pre-save|shorts)\b/i.test(sentence));
+
+  const first = sentences[0] || normalized;
+  const second = sentences[1] || "";
+  const spiritualKeywords = ["christ", "jesus", "god", "grace", "gospel", "cross", "salvation", "redemption", "faith", "scripture", "worship", "holy spirit"];
+  const spiritualMatches = spiritualKeywords.filter((keyword) => normalized.toLowerCase().includes(keyword));
+  const spiritualTone = spiritualMatches.length ? `Scripture-centered, ${spiritualMatches.slice(0, 3).join(", ")}` : "";
+  const summaryParts = [first, second].filter(Boolean);
+  if (spiritualTone) summaryParts.push(spiritualTone);
+
+  return {
+    theme: first || fallbackTitle,
+    meaning: summaryParts.join(" ").trim() || fallbackTitle,
+    spiritualTone,
+    scriptureReferences: [],
+    summary: summaryParts.join(" ").trim() || fallbackTitle
+  };
+}
+
+function parseIsoDuration(duration) {
+  const match = String(duration || "").match(
+    /^P(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/
+  );
+  if (!match) return 0;
+  const hours = Number.parseInt(match[1] || "0", 10);
+  const minutes = Number.parseInt(match[2] || "0", 10);
+  const seconds = Number.parseInt(match[3] || "0", 10);
+  return (hours * 3600) + (minutes * 60) + seconds;
+}
+
+async function fetchYouTubeVideoDetails(videoIds) {
+  if (!YOUTUBE_API_KEY) {
+    return new Map();
+  }
+
+  const ids = Array.from(new Set((videoIds || []).filter(Boolean)));
+  const details = new Map();
+
+  for (let index = 0; index < ids.length; index += 50) {
+    const batch = ids.slice(index, index + 50);
+    const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+    url.searchParams.set("part", "snippet,contentDetails");
+    url.searchParams.set("id", batch.join(","));
+    url.searchParams.set("key", YOUTUBE_API_KEY);
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      throw new Error(`YouTube API HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    for (const item of data?.items || []) {
+      const videoId = item?.id || "";
+      if (!videoId) continue;
+      const description = normalizeDescription(item?.snippet?.description || "");
+      details.set(videoId, {
+        description,
+        descriptionNormalized: normalizeSongTitle(description),
+        duration: item?.contentDetails?.duration || "",
+        durationSeconds: parseIsoDuration(item?.contentDetails?.duration || "")
+      });
+    }
+  }
+
+  return details;
 }
 
 async function readSongIndex() {
@@ -89,6 +187,9 @@ async function loadEventStreamSongs() {
         youtubeUrl: event.youtubeUrl,
         duration: event.duration,
         durationSeconds: event.durationSeconds,
+        description: event.description || "",
+        descriptionNormalized: normalizeDescription(event.description || ""),
+        songContext: buildSongContextFromDescription(event.description || "", event.title || ""),
         type: "official_release",
         source: "youtube",
         createdAt: event.createdAt || new Date().toISOString(),
@@ -99,7 +200,19 @@ async function loadEventStreamSongs() {
     lastKey = response?.LastEvaluatedKey || null;
   } while (lastKey);
 
-  return songs;
+  const details = await fetchYouTubeVideoDetails(songs.map((song) => song.songId));
+
+  return songs.map((song) => {
+    const detail = details.get(song.songId) || {};
+    const description = String(song.description || detail.description || "").trim();
+    return {
+      ...song,
+      description,
+      descriptionNormalized: normalizeDescription(description),
+      duration: song.duration || detail.duration || "",
+      durationSeconds: Number(song.durationSeconds || 0) || Number(detail.durationSeconds || 0) || 0
+    };
+  });
 }
 
 function buildItem(song) {
@@ -107,6 +220,9 @@ function buildItem(song) {
   const normalizedTitle = normalizeSongTitle(title);
   const canonicalTitle = String(song?.canonicalTitle || deriveCanonicalTitle(title)).trim();
   const meaningUrl = String(song?.meaningUrl || `https://shieldbearerusa.com/song-meanings.html#${String(song?.slug || song?.id || normalizedTitle).trim()}`).trim();
+  const songContext = song?.songContext && typeof song.songContext === "object"
+    ? song.songContext
+    : buildSongContextFromDescription(song?.description || "", title);
   return {
     songId: String(song?.songId || song?.id || normalizedTitle).trim(),
     pk: String(song?.songId || song?.id || normalizedTitle).trim(),
@@ -118,6 +234,12 @@ function buildItem(song) {
     publishedAt: String(song?.publishedAt || "").trim(),
     youtubeUrl: String(song?.actions?.youtube || song?.sourceUrl || "").trim(),
     duration: String(song?.duration || "").trim(),
+    description: String(song?.description || "").trim(),
+    descriptionNormalized: normalizeDescription(song?.description || ""),
+    songContext,
+    songContextTheme: String(songContext.theme || "").trim(),
+    songContextMeaning: String(songContext.meaning || "").trim(),
+    songContextSummary: String(songContext.summary || "").trim(),
     type: "official_release",
     releaseLabel: String(song?.releaseLabel || "").trim(),
     meaningUrl: String(song?.meaningUrl || "").trim(),

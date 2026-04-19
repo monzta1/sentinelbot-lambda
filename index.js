@@ -47,6 +47,18 @@ function normalizeSongTitle(value) {
   return normalizeReleaseTitle(value);
 }
 
+function normalizeSongDescription(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[^\p{L}\p{N}\s.,!?;:'"’()-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function isShortFormTitle(value) {
   const normalized = normalizeQuestion(value);
   return normalized.includes("#shorts") ||
@@ -87,6 +99,108 @@ function selectBestSongCandidate(items, normalizedTitle) {
     }))
     .sort((a, b) => b.score - a.score)
     .map((entry) => entry.candidate)[0] || null;
+}
+
+function extractSongContextFromDescription(description, title = "") {
+  const normalized = normalizeSongDescription(description);
+  const cleanTitle = String(title || "").trim();
+  if (!normalized) {
+    return {
+      theme: "",
+      meaning: "",
+      spiritualTone: "",
+      summary: ""
+    };
+  }
+
+  const rawSentences = normalized
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  const noisePatterns = [
+    /https?:\/\//i,
+    /\bsubscribe\b/i,
+    /\bspotify\b/i,
+    /\byoutube\b/i,
+    /\bstream\b/i,
+    /\bwatch\b/i,
+    /\bofficial\b/i,
+    /\bvideo\b/i,
+    /\bout now\b/i,
+    /\bavailable now\b/i,
+    /\blink in bio\b/i,
+    /\bpre-save\b/i,
+    /\bmerch\b/i,
+    /\bfollow\b/i,
+    /\bshorts\b/i
+  ];
+
+  const sentences = rawSentences.filter((sentence) => !noisePatterns.some((pattern) => pattern.test(sentence)));
+  const meaningfulSentences = sentences.length ? sentences : rawSentences;
+  const first = meaningfulSentences[0] || "";
+  const second = meaningfulSentences[1] || "";
+  const combined = [first, second].filter(Boolean).join(" ").trim();
+
+  const spiritualKeywords = [
+    "christ",
+    "jesus",
+    "god",
+    "grace",
+    "gospel",
+    "cross",
+    "salvation",
+    "redeem",
+    "redemption",
+    "faith",
+    "prayer",
+    "scripture",
+    "holy spirit",
+    "worship",
+    "sin",
+    "light",
+    "darkness",
+    "kingdom"
+  ];
+  const spiritualMatches = spiritualKeywords.filter((keyword) => normalized.toLowerCase().includes(keyword));
+  const spiritualTone = spiritualMatches.length
+    ? `Scripture-centered, ${spiritualMatches.slice(0, 3).join(", ")}`
+    : "";
+
+  const theme = first || cleanTitle;
+  const meaning = combined || first || cleanTitle;
+  const summaryParts = [meaning];
+  if (spiritualTone) {
+    summaryParts.push(spiritualTone);
+  }
+
+  return {
+    theme,
+    meaning,
+    spiritualTone,
+    summary: summaryParts.filter(Boolean).join(" ").trim()
+  };
+}
+
+function buildSongContextFromStoredData(song) {
+  const description = String(song?.description || song?.descriptionNormalized || "").trim();
+  const descriptionContext = description ? extractSongContextFromDescription(description, song?.title || song?.canonicalTitle || "") : null;
+  const context = song?.songContext && typeof song.songContext === "object" ? song.songContext : {};
+  const theme = String(context.theme || descriptionContext?.theme || song?.genre || song?.reference || "").trim();
+  const meaning = String(context.meaning || descriptionContext?.meaning || song?.thesis || song?.meaningSummary || "").trim();
+  const spiritualTone = String(context.spiritualTone || descriptionContext?.spiritualTone || "").trim();
+  const summary = String(context.summary || descriptionContext?.summary || song?.meaningSummary || song?.thesis || "").trim();
+  const scriptureReferences = Array.isArray(context.scriptureReferences) && context.scriptureReferences.length
+    ? context.scriptureReferences.filter(Boolean)
+    : (song?.scriptureRef ? [String(song.scriptureRef).trim()].filter(Boolean) : []);
+
+  return {
+    theme,
+    meaning,
+    spiritualTone,
+    summary,
+    scriptureReferences
+  };
 }
 
 function formatPublishedAtForStrictLookup(value) {
@@ -244,17 +358,23 @@ async function lookupSongByQuestionFromSongsTable(question) {
           "#type": "type",
           "#meaningUrl": "meaningUrl",
           "#summary": "summary",
-          "#thesis": "thesis"
+          "#thesis": "thesis",
+          "#description": "description",
+          "#songContext": "songContext"
         },
         ExpressionAttributeValues: {
           ":query": normalizedTitle
         },
-        ProjectionExpression: "songId, title, normalizedTitle, canonicalTitle, normalizedCanonicalTitle, publishedAt, youtubeUrl, #source, #type, #meaningUrl, #summary, #thesis"
+        ProjectionExpression: "songId, title, normalizedTitle, canonicalTitle, normalizedCanonicalTitle, publishedAt, youtubeUrl, #source, #type, #meaningUrl, #summary, #thesis, #description, descriptionNormalized, #songContext"
       }));
       item = selectBestSongCandidate(scanResponse?.Items, normalizedTitle);
     }
 
     if (!item) return null;
+
+    const context = buildSongContextFromStoredData(item);
+    const description = String(item.description || "").trim();
+    const descriptionNormalized = String(item.descriptionNormalized || normalizeSongDescription(description)).trim();
 
     return {
       title: item.title || title,
@@ -265,7 +385,10 @@ async function lookupSongByQuestionFromSongsTable(question) {
       releaseLabel: String(item.releaseLabel || "").trim(),
       publishedAt: String(item.publishedAt || "").trim(),
       sourceUrl: String(item.youtubeUrl || item.sourceUrl || "").trim(),
-      songId: String(item.songId || item.pk || "").trim()
+      songId: String(item.songId || item.pk || "").trim(),
+      description,
+      descriptionNormalized,
+      songContext: context
     };
   } catch (error) {
     console.warn("SongsTable lookup unavailable", error.message);
@@ -489,18 +612,7 @@ function isSongLookupQuestion(question) {
 }
 
 function buildSongContextSummary(song) {
-  const context = song?.songContext && typeof song.songContext === "object" ? song.songContext : {};
-  const theme = String(context.theme || song?.genre || song?.reference || "").trim();
-  const meaning = String(context.meaning || song?.thesis || song?.meaningSummary || "").trim();
-  const summary = String(context.summary || song?.meaningSummary || song?.thesis || "").trim();
-  const scriptureReferences = Array.isArray(context.scriptureReferences) ? context.scriptureReferences.filter(Boolean) : [];
-
-  return {
-    theme,
-    meaning,
-    summary,
-    scriptureReferences
-  };
+  return buildSongContextFromStoredData(song);
 }
 
 async function lookupSongContextByQuestion(question) {
@@ -509,6 +621,22 @@ async function lookupSongContextByQuestion(question) {
 
   const normalized = normalizeReleaseTitle(title);
   if (!normalized) return null;
+
+  const tableSong = await lookupSongByQuestionFromSongsTable(question);
+  if (tableSong) {
+    const context = buildSongContextSummary(tableSong);
+    const themeSummary = context.summary || context.meaning || context.theme;
+    if (themeSummary) {
+      return {
+        answer: `${tableSong.canonicalTitle || tableSong.title || title} explores ${themeSummary}`,
+        lookupMode: "song-context",
+        fallbackReason: null,
+        songsTableAvailable: songsTableAvailable === true,
+        songId: String(tableSong.songId || "").trim(),
+        context
+      };
+    }
+  }
 
   const index = loadSongIndex();
   const song = index.byTitle?.[normalized] || index.bySlug?.[normalized] || null;
@@ -548,6 +676,8 @@ async function lookupSongByQuestion(question) {
   const publishedAt = String(song.publishedAt || "").trim();
   const sourceUrl = String(song.sourceUrl || song.actions?.youtube || song.actions?.spotify || meaningUrl).trim();
   const context = buildSongContextSummary(song);
+  const description = String(song.description || "").trim();
+  const descriptionNormalized = String(song.descriptionNormalized || normalizeSongDescription(description)).trim();
 
   return {
     title: song.title || title,
@@ -557,6 +687,8 @@ async function lookupSongByQuestion(question) {
     releaseLabel,
     publishedAt,
     sourceUrl,
+    description,
+    descriptionNormalized,
     songContext: context
   };
 }

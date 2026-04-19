@@ -35,6 +35,53 @@ function decodeHtml(value) {
     .replace(/&gt;/g, ">");
 }
 
+function normalizeDescription(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[^\p{L}\p{N}\s.,!?;:'"’()-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildSongContextFromDescription(description, fallbackTitle = "") {
+  const normalized = normalizeDescription(description);
+  const title = String(fallbackTitle || "").trim();
+  if (!normalized) {
+    return {
+      theme: "",
+      meaning: "",
+      spiritualTone: "",
+      summary: ""
+    };
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !/https?:\/\//i.test(sentence))
+    .filter((sentence) => !/\b(spotify|youtube|subscribe|watch|stream|official video|out now|available now|follow|merch|pre-save)\b/i.test(sentence));
+
+  const first = sentences[0] || normalized;
+  const second = sentences[1] || "";
+  const spiritualKeywords = ["christ", "jesus", "god", "grace", "gospel", "cross", "salvation", "redemption", "faith", "scripture", "worship"];
+  const spiritualMatches = spiritualKeywords.filter((keyword) => normalized.toLowerCase().includes(keyword));
+  const spiritualTone = spiritualMatches.length ? `Scripture-centered, ${spiritualMatches.slice(0, 3).join(", ")}` : "";
+  const summaryParts = [first, second].filter(Boolean);
+  if (spiritualTone) summaryParts.push(spiritualTone);
+
+  return {
+    theme: first || title,
+    meaning: summaryParts.join(" ").trim() || title,
+    spiritualTone,
+    summary: summaryParts.join(" ").trim() || title
+  };
+}
+
 async function readJsonFile(filePath) {
   const raw = await fs.readFile(filePath, "utf8");
   return JSON.parse(raw);
@@ -102,11 +149,15 @@ function buildSongRecord(song, trackRefs, releaseIndex) {
   const scriptureQuote = String(song?.scripture?.quote || "").trim();
   const tags = Array.isArray(song.tags) ? song.tags.map((tag) => String(tag).trim()).filter(Boolean) : [];
   const theme = tags.length ? tags.join(", ") : String(song.genre || song.reference || "song meaning").trim();
+  const description = String(song.description || "").trim();
+  const descriptionNormalized = normalizeDescription(description);
+  const descriptionContext = buildSongContextFromDescription(description, title);
   const songContext = {
-    theme,
-    meaning: String(song.thesis || meaningSummary || song.reference || title).trim(),
+    theme: String(descriptionContext.theme || theme).trim(),
+    meaning: String(descriptionContext.meaning || song.thesis || meaningSummary || song.reference || title).trim(),
+    spiritualTone: String(descriptionContext.spiritualTone || "").trim(),
     scriptureReferences: scriptureRef ? [scriptureRef] : [],
-    summary: String([meaningSummary || song.thesis || "", scriptureRef ? `Scripture: ${scriptureRef}` : ""].filter(Boolean).join(" ")).trim()
+    summary: String(descriptionContext.summary || [meaningSummary || song.thesis || "", scriptureRef ? `Scripture: ${scriptureRef}` : ""].filter(Boolean).join(" ")).trim()
   };
   const trackRef = trackRefs[normalizedTitle] || String(song.reference || "").trim();
 
@@ -124,6 +175,8 @@ function buildSongRecord(song, trackRefs, releaseIndex) {
     publishedAt: String(releaseRecord?.publishedAt || "").trim(),
     sourceUrl: String(releaseRecord?.sourceUrl || song?.actions?.youtube || song?.actions?.spotify || meaningUrl).trim(),
     meaningUrl,
+    description,
+    descriptionNormalized,
     thesis: String(song.thesis || "").trim(),
     meaningSummary,
     scriptureRef,

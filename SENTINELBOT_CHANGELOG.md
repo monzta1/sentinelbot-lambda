@@ -146,3 +146,8 @@ Versioning note:
 - Added a dedicated Song Context layer for meaning-based song questions
 - Built song-context fields at index generation time from the canonical song catalog
 - Routed “about this song” and “meaning of” queries away from release facts and into thematic responses
+
+## v1.4.17 - April 2026
+- Captured YouTube descriptions in the release ingestion pipeline
+- Stored description-backed song context in the SongsTable schema
+- Made meaning responses derive from stored YouTube description data first, with catalog fallback only when needed

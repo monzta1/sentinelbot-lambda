@@ -37,6 +37,55 @@ function normalizeSongTitle(value) {
     .trim();
 }
 
+function normalizeSongDescription(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/https?:\/\/\S+/gi, " ")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[^\p{L}\p{N}\s.,!?;:'"’()-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildSongContextFromDescription(description, title = "") {
+  const normalized = normalizeSongDescription(description);
+  const fallbackTitle = String(title || "").trim();
+  if (!normalized) {
+    return {
+      theme: "",
+      meaning: "",
+      spiritualTone: "",
+      scriptureReferences: [],
+      summary: ""
+    };
+  }
+
+  const sentences = normalized
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !/https?:\/\//i.test(sentence))
+    .filter((sentence) => !/\b(spotify|youtube|subscribe|watch|stream|official video|out now|available now|follow|merch|pre-save|shorts)\b/i.test(sentence));
+
+  const first = sentences[0] || normalized;
+  const second = sentences[1] || "";
+  const spiritualKeywords = ["christ", "jesus", "god", "grace", "gospel", "cross", "salvation", "redemption", "faith", "scripture", "worship", "holy spirit"];
+  const spiritualMatches = spiritualKeywords.filter((keyword) => normalized.toLowerCase().includes(keyword));
+  const spiritualTone = spiritualMatches.length ? `Scripture-centered, ${spiritualMatches.slice(0, 3).join(", ")}` : "";
+  const summaryParts = [first, second].filter(Boolean);
+  if (spiritualTone) summaryParts.push(spiritualTone);
+
+  return {
+    theme: first || fallbackTitle,
+    meaning: summaryParts.join(" ").trim() || fallbackTitle,
+    spiritualTone,
+    scriptureReferences: [],
+    summary: summaryParts.join(" ").trim() || fallbackTitle
+  };
+}
+
 function parseTimestamp(value) {
   if (!value) return 0;
   const parsed = Date.parse(value);
@@ -143,6 +192,7 @@ async function fetchLatestVideos({ playlistId, limit }) {
       videos.push({
         videoId,
         title: normalizeText(item?.snippet?.title || ""),
+        description: normalizeText(item?.snippet?.description || ""),
         publishedAt: item?.contentDetails?.videoPublishedAt || item?.snippet?.publishedAt || "",
         sourceUrl: `https://www.youtube.com/watch?v=${videoId}`
       });
@@ -195,6 +245,7 @@ async function loadWatcherState() {
 function buildReleaseEventItem(video) {
   const releaseKey = `${EVENT_PREFIX}${video.videoId}`;
   const timestamp = nowIso();
+  const description = normalizeText(video.description || "");
   return {
     id: video.videoId,
     pk: releaseKey,
@@ -202,6 +253,8 @@ function buildReleaseEventItem(video) {
     eventType: "new_content_detected",
     source: "youtube",
     title: video.title,
+    description,
+    descriptionNormalized: normalizeSongTitle(description),
     publishedAt: video.publishedAt,
     sourceUrl: video.sourceUrl,
     processed: false,
@@ -216,6 +269,9 @@ function buildSongItem(video) {
   const normalizedTitle = normalizeSongTitle(title);
   const canonicalTitle = normalizedTitle.replace(/\s+(official|lyric|video|short|shorts|chorus)\b.*$/i, "").trim() || normalizedTitle;
   const meaningUrl = `https://shieldbearerusa.com/song-meanings.html#${normalizedTitle.replace(/\s+/g, "-")}`;
+  const description = normalizeText(video.description || "");
+  const descriptionNormalized = normalizeSongDescription(description);
+  const songContext = buildSongContextFromDescription(description, title);
 
   return {
     songId: video.videoId,
@@ -225,6 +281,12 @@ function buildSongItem(video) {
     canonicalTitle,
     normalizedCanonicalTitle: normalizeSongTitle(canonicalTitle),
     meaningUrl,
+    description,
+    descriptionNormalized,
+    songContext,
+    songContextTheme: songContext.theme,
+    songContextMeaning: songContext.meaning,
+    songContextSummary: songContext.summary,
     publishedAt: video.publishedAt || "",
     youtubeUrl: video.sourceUrl || "",
     duration: video.duration || "",
