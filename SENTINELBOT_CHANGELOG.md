@@ -6,6 +6,10 @@ Versioning note:
 - Minor bumps track visible capability additions or new behavioral layers
 - Major bumps track architecture or deployment model changes
 
+## v1.4.31 - April 2026
+- Corrected the canonical Shieldbearer founding answer to April 20, 2025
+- Added nearby founding and launch phrasings so the same date stays consistent across Q&A variants
+
 ## v1.0 - April 2026
 - Initial deployment of SentinelBot Mark I
 - Watchman-class Guardian Intelligence online
