@@ -169,3 +169,8 @@ Versioning note:
 - Tightened song-intent routing so only real song queries enter the song path
 - Added Anthropic song-context prompts for catalog misses using stored song metadata
 - Preserved the deterministic lookup layers before any narrative fallback
+
+## v1.4.22 - April 2026
+- Split song intent routing into release, meaning, and hybrid paths
+- Ensured meaning/explanation queries bypass cached release answers
+- Removed duplicate song-intent helpers so the handler has one canonical classifier

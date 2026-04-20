@@ -466,13 +466,25 @@ async function lookupSongStrictResponse(question) {
   return song.title ? `${song.title} — ${formattedDate}` : formattedDate;
 }
 
-async function resolveSongLookup(question) {
+async function resolveSongMeaningLookup(question, history = []) {
+  const song = await lookupSongByQuestion(question);
+  const extraContext = song ? buildSongAnthropicContext(song) : null;
+  const answer = await callAnthropic(question, history, extraContext);
+
+  return {
+    answer,
+    lookupMode: extraContext ? "song-context-anthropic" : "anthropic-song-intent",
+    fallbackReason: null,
+    songsTableAvailable: songsTableAvailable === true,
+    songId: song ? String(song.songId || song.id || "").trim() : null,
+    context: song ? song.songContext || null : null
+  };
+}
+
+async function resolveSongLookup(question, history = [], intent = classifySongIntent(question)) {
   const available = await getSongsTableAvailability();
-  if (isSongContextQuestion(question)) {
-    const contextSong = await lookupSongContextByQuestion(question);
-    if (contextSong) {
-      return contextSong;
-    }
+  if (intent === "meaning" || intent === "hybrid") {
+    return resolveSongMeaningLookup(question, history);
   }
 
   const strictSongResponse = available ? await lookupSongStrictResponse(question) : null;
@@ -642,6 +654,50 @@ function isSongContextQuestion(question) {
     normalized.includes("what is ") && normalized.includes(" about");
 }
 
+function classifySongIntent(question) {
+  const normalized = normalizeQuestion(question);
+  if (!normalized) return "hybrid";
+
+  const releaseSignals = [
+    "when was",
+    "when did",
+    "release date",
+    "released",
+    "release on",
+    "come out"
+  ];
+  const meaningSignals = [
+    "about this song",
+    "what is this song about",
+    "what does this song mean",
+    "meaning of",
+    "tell me about",
+    "what is ",
+    "about",
+    "meaning",
+    "lyrics",
+    "scripture",
+    "story"
+  ];
+
+  const hasReleaseSignal = releaseSignals.some((signal) => normalized.includes(signal));
+  const hasMeaningSignal = meaningSignals.some((signal) => normalized.includes(signal));
+
+  if (hasReleaseSignal && !hasMeaningSignal) {
+    return "release";
+  }
+
+  if (hasMeaningSignal && !hasReleaseSignal) {
+    return "meaning";
+  }
+
+  if (hasMeaningSignal && hasReleaseSignal) {
+    return "hybrid";
+  }
+
+  return "hybrid";
+}
+
 function isSongLookupQuestion(question) {
   const normalized = normalizeQuestion(question);
   const title = extractReleaseQueryTitle(question);
@@ -657,8 +713,9 @@ function isSongLookupQuestion(question) {
     releaseIndex[normalizedTitle]
   );
   const explicitSongIntent = /\b(release(?:d| date)?|when was|when did|lyrics?|meaning|story behind|scripture behind|song|track|music|single|official|come out|dossier)\b/i.test(normalized);
+  const contextIntent = isSongContextQuestion(question);
 
-  return knownSong || explicitSongIntent;
+  return knownSong || explicitSongIntent || contextIntent;
 }
 
 function buildSongContextSummary(song) {
@@ -1326,6 +1383,8 @@ function getSiteIntentResponse() {
 
 async function findCachedAnswer(question) {
   if (!question) return null;
+  const songIntent = classifySongIntent(question);
+  if (songIntent === "meaning" || songIntent === "hybrid") return null;
 
   for (const route of FAQ_ROUTES) {
     if (route.match(question)) {
@@ -1637,6 +1696,7 @@ function buildSongAnthropicContext(song) {
   }
   if (song.meaningUrl) lines.push(`- Dossier URL: ${song.meaningUrl}`);
   if (song.sourceUrl) lines.push(`- Source URL: ${song.sourceUrl}`);
+  if (context.summary) lines.push(`- Summary: ${context.summary}`);
 
   lines.push("");
   lines.push("Answer the user's question about this specific track in Shieldbearer's voice. Use the scripture or theological angle that fits. If the catalog data is thin, answer honestly from the mission without filler. Do not invent facts not present above or in the system prompt. Include the dossier URL or source URL as an HTML anchor if you reference the track's page.");
@@ -1742,7 +1802,8 @@ exports.handler = async (event) => {
       };
     }
 
-    const isSongQuestion = isSongLookupQuestion(question);
+    const songIntent = classifySongIntent(question);
+    const isSongQuestion = isSongLookupQuestion(question) || songIntent === "release" || songIntent === "meaning" || songIntent === "hybrid";
     let answer = null;
     let status = "success";
     let source = "anthropic";
@@ -1752,45 +1813,50 @@ exports.handler = async (event) => {
     let songsTableIsAvailable = songsTableAvailable === true;
 
     if (isSongQuestion) {
-      const resolved = await resolveSongLookup(question);
+      const resolved = await resolveSongLookup(question, history, songIntent);
       lookupMode = resolved.lookupMode || null;
       fallbackReason = resolved.fallbackReason || null;
       songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
 
-      const structuredSongModes = new Set(["strict-lookup", "catalog-lookup", "release-index", "degraded-no-songs-table"]);
-      const hasStructuredAnswer = resolved.answer && structuredSongModes.has(resolved.lookupMode);
-
-      if (hasStructuredAnswer) {
+      if (songIntent === "meaning" || songIntent === "hybrid") {
         answer = resolved.answer;
-        source = "app-cache-hit";
-      } else if (!songsTableIsAvailable && !resolved.answer) {
-        answer = "SongsTable unavailable. Ask again later or check the catalog.";
-        status = "error";
-        source = "error";
-        errorMessage = "SongsTable unavailable";
-        lookupMode = lookupMode || "degraded-no-songs-table";
-        fallbackReason = fallbackReason || "songs_table_unavailable";
-        console.warn(JSON.stringify({
-          songsTableAvailable: false,
-          lookupMode,
-          fallbackReason,
-          lookupSource: "songs-table",
-          responseMode: "degraded-no-songs-table"
-        }));
+        source = resolved.lookupMode === "song-context-anthropic" ? "anthropic-song-context" : "anthropic";
       } else {
-        const song = await lookupSongByQuestion(question);
-        const extraContext = song ? buildSongAnthropicContext(song) : null;
-        try {
-          answer = await callAnthropic(question, history, extraContext);
-          source = extraContext ? "anthropic-song-context" : "anthropic";
-          lookupMode = extraContext ? "anthropic-with-db" : (lookupMode || "anthropic-only");
-        } catch (err) {
-          answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
+        const structuredSongModes = new Set(["strict-lookup", "catalog-lookup", "release-index", "degraded-no-songs-table"]);
+        const hasStructuredAnswer = resolved.answer && structuredSongModes.has(resolved.lookupMode);
+
+        if (hasStructuredAnswer) {
+          answer = resolved.answer;
+          source = "app-cache-hit";
+        } else if (!songsTableIsAvailable && !resolved.answer) {
+          answer = "SongsTable unavailable. Ask again later or check the catalog.";
           status = "error";
           source = "error";
-          errorMessage = err.message;
-          lookupMode = lookupMode || "song-miss";
-          fallbackReason = fallbackReason || "anthropic_failed";
+          errorMessage = "SongsTable unavailable";
+          lookupMode = lookupMode || "degraded-no-songs-table";
+          fallbackReason = fallbackReason || "songs_table_unavailable";
+          console.warn(JSON.stringify({
+            songsTableAvailable: false,
+            lookupMode,
+            fallbackReason,
+            lookupSource: "songs-table",
+            responseMode: "degraded-no-songs-table"
+          }));
+        } else {
+          const song = await lookupSongByQuestion(question);
+          const extraContext = song ? buildSongAnthropicContext(song) : null;
+          try {
+            answer = await callAnthropic(question, history, extraContext);
+            source = extraContext ? "anthropic-song-context" : "anthropic";
+            lookupMode = extraContext ? "anthropic-with-db" : (lookupMode || "anthropic-only");
+          } catch (err) {
+            answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
+            status = "error";
+            source = "error";
+            errorMessage = err.message;
+            lookupMode = lookupMode || "song-miss";
+            fallbackReason = fallbackReason || "anthropic_failed";
+          }
         }
       }
     } else if (isSiteIntentQuestion(question)) {
