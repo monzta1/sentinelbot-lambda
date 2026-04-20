@@ -49,6 +49,64 @@ function normalizeSongDescription(value) {
     .trim();
 }
 
+function normalizeLyricsBlock(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractLyricsFromDescription(description) {
+  const lines = String(description || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return "";
+
+  const noisePatterns = [
+    /https?:\/\//i,
+    /\b(spotify|youtube|subscribe|follow|merch|pre-save|stream|watch|official video|out now|available now|link in bio|shorts)\b/i
+  ];
+  const sectionPattern = /^(?:[\(\[]?\s*(verse|chorus|bridge|intro|outro|pre-chorus|hook)(?:\s*\d+)?\s*[\)\]]?\s*[:\-–—]?\s*)$/i;
+
+  const kept = [];
+  let sectionCount = 0;
+  let lyricLineCount = 0;
+
+  for (const line of lines) {
+    if (noisePatterns.some((pattern) => pattern.test(line))) {
+      continue;
+    }
+
+    if (sectionPattern.test(line)) {
+      sectionCount += 1;
+      kept.push(line.replace(/[:\-–—\s]+$/g, "").trim());
+      continue;
+    }
+
+    const wordCount = line.split(/\s+/).filter(Boolean).length;
+    const lyricish = wordCount > 0 && wordCount <= 14 && /[A-Za-z]/.test(line);
+    if (lyricish) {
+      lyricLineCount += 1;
+      kept.push(line);
+    }
+  }
+
+  const looksStructured = sectionCount >= 2 || (sectionCount >= 1 && lyricLineCount >= 4) || lyricLineCount >= 10;
+  if (!looksStructured) return "";
+
+  const lyrics = normalizeLyricsBlock(kept.join("\n"));
+  return lyrics.length >= 100 ? lyrics : "";
+}
+
 function buildSongContextFromDescription(description, title = "") {
   const normalized = normalizeSongDescription(description);
   const fallbackTitle = String(title || "").trim();
@@ -246,6 +304,7 @@ function buildReleaseEventItem(video) {
   const releaseKey = `${EVENT_PREFIX}${video.videoId}`;
   const timestamp = nowIso();
   const description = normalizeText(video.description || "");
+  const lyrics = extractLyricsFromDescription(description);
   return {
     id: video.videoId,
     pk: releaseKey,
@@ -255,6 +314,9 @@ function buildReleaseEventItem(video) {
     title: video.title,
     description,
     descriptionNormalized: normalizeSongTitle(description),
+    lyrics,
+    lyricsSource: lyrics ? "youtube_description" : "",
+    lyricsConfidence: lyrics ? "medium" : "",
     publishedAt: video.publishedAt,
     sourceUrl: video.sourceUrl,
     processed: false,
@@ -272,6 +334,7 @@ function buildSongItem(video) {
   const description = normalizeText(video.description || "");
   const descriptionNormalized = normalizeSongDescription(description);
   const songContext = buildSongContextFromDescription(description, title);
+  const lyrics = extractLyricsFromDescription(description);
 
   return {
     songId: video.videoId,
@@ -283,6 +346,9 @@ function buildSongItem(video) {
     meaningUrl,
     description,
     descriptionNormalized,
+    lyrics,
+    lyricsSource: lyrics ? "youtube_description" : "",
+    lyricsConfidence: lyrics ? "medium" : "",
     songContext,
     songContextTheme: songContext.theme,
     songContextMeaning: songContext.meaning,

@@ -194,3 +194,8 @@ Versioning note:
 - Raised the lyrics generation token budget to prevent clipped verses
 - Added a larger retry ceiling for incomplete lyric outputs
 - Left meaning and fact response modes unchanged
+
+## v1.4.27 - April 2026
+- Added deterministic lyrics storage fields for manual, YouTube, and generated sources
+- Extracted lyric-shaped blocks from YouTube descriptions during ingestion and backfill
+- Switched lyrics retrieval to use stored lyrics before any Anthropic fallback

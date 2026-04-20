@@ -59,6 +59,64 @@ function normalizeSongDescription(value) {
     .trim();
 }
 
+function normalizeLyricsBlock(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractLyricsFromDescription(description) {
+  const lines = String(description || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return "";
+
+  const noisePatterns = [
+    /https?:\/\//i,
+    /\b(spotify|youtube|subscribe|follow|merch|pre-save|stream|watch|official video|out now|available now|link in bio|shorts)\b/i
+  ];
+  const sectionPattern = /^(?:[\(\[]?\s*(verse|chorus|bridge|intro|outro|pre-chorus|hook)(?:\s*\d+)?\s*[\)\]]?\s*[:\-–—]?\s*)$/i;
+
+  const kept = [];
+  let sectionCount = 0;
+  let lyricLineCount = 0;
+
+  for (const line of lines) {
+    if (noisePatterns.some((pattern) => pattern.test(line))) {
+      continue;
+    }
+
+    if (sectionPattern.test(line)) {
+      sectionCount += 1;
+      kept.push(line.replace(/[:\-–—\s]+$/g, "").trim());
+      continue;
+    }
+
+    const wordCount = line.split(/\s+/).filter(Boolean).length;
+    const lyricish = wordCount > 0 && wordCount <= 14 && /[A-Za-z]/.test(line);
+    if (lyricish) {
+      lyricLineCount += 1;
+      kept.push(line);
+    }
+  }
+
+  const looksStructured = sectionCount >= 2 || (sectionCount >= 1 && lyricLineCount >= 4) || lyricLineCount >= 10;
+  if (!looksStructured) return "";
+
+  const lyrics = normalizeLyricsBlock(kept.join("\n"));
+  return lyrics.length >= 100 ? lyrics : "";
+}
+
 function formatSongDisplayTitle(value) {
   const normalized = normalizeSongTitle(value);
   if (!normalized) return String(value || "").trim();
@@ -254,6 +312,54 @@ function buildSongContextFromStoredData(song) {
   };
 }
 
+function resolveStoredLyrics(song) {
+  if (!song) return null;
+
+  const rawLyrics = normalizeLyricsBlock(
+    song.lyrics ||
+    song.parsedLyrics ||
+    song.cachedLyrics ||
+    ""
+  );
+  const source = String(song.lyricsSource || "").trim().toLowerCase();
+
+  if (source === "manual" && rawLyrics) {
+    return {
+      lyrics: rawLyrics,
+      lyricsSource: "manual",
+      lyricsConfidence: "high"
+    };
+  }
+
+  if (source === "youtube_description" && rawLyrics) {
+    return {
+      lyrics: rawLyrics,
+      lyricsSource: "youtube_description",
+      lyricsConfidence: "medium"
+    };
+  }
+
+  if (rawLyrics) {
+    return {
+      lyrics: rawLyrics,
+      lyricsSource: source || "cached_parsed",
+      lyricsConfidence: source === "generated" ? "low" : "low"
+    };
+  }
+
+  const description = String(song.description || song.descriptionNormalized || "").trim();
+  const extracted = extractLyricsFromDescription(description);
+  if (extracted) {
+    return {
+      lyrics: extracted,
+      lyricsSource: "youtube_description",
+      lyricsConfidence: "medium"
+    };
+  }
+
+  return null;
+}
+
 function formatPublishedAtForStrictLookup(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -418,12 +524,15 @@ async function lookupSongByQuestionFromSongsTable(question) {
           "#summary": "summary",
           "#thesis": "thesis",
           "#description": "description",
+          "#lyrics": "lyrics",
+          "#lyricsSource": "lyricsSource",
+          "#lyricsConfidence": "lyricsConfidence",
           "#songContext": "songContext"
         },
         ExpressionAttributeValues: {
           ":query": normalizedTitle
         },
-        ProjectionExpression: "songId, title, normalizedTitle, canonicalTitle, normalizedCanonicalTitle, publishedAt, youtubeUrl, #source, #type, #meaningUrl, #summary, #thesis, #description, descriptionNormalized, #songContext"
+        ProjectionExpression: "songId, title, normalizedTitle, canonicalTitle, normalizedCanonicalTitle, publishedAt, youtubeUrl, #source, #type, #meaningUrl, #summary, #thesis, #description, descriptionNormalized, #lyrics, #lyricsSource, #lyricsConfidence, #songContext"
       }));
       item = selectBestSongCandidate(scanResponse?.Items, normalizedTitle);
     }
@@ -433,6 +542,9 @@ async function lookupSongByQuestionFromSongsTable(question) {
     const context = buildSongContextFromStoredData(item);
     const description = String(item.description || "").trim();
     const descriptionNormalized = String(item.descriptionNormalized || normalizeSongDescription(description)).trim();
+    const lyrics = String(item.lyrics || "").trim();
+    const lyricsSource = String(item.lyricsSource || "").trim();
+    const lyricsConfidence = String(item.lyricsConfidence || "").trim();
 
     return {
       title: item.title || title,
@@ -446,6 +558,9 @@ async function lookupSongByQuestionFromSongsTable(question) {
       songId: String(item.songId || item.pk || "").trim(),
       description,
       descriptionNormalized,
+      lyrics,
+      lyricsSource,
+      lyricsConfidence,
       songContext: context
     };
   } catch (error) {
@@ -491,6 +606,21 @@ async function resolveSongMeaningLookup(question, history = []) {
 
 async function resolveSongLyricsLookup(question, history = []) {
   const song = await lookupSongByQuestion(question);
+  const storedLyrics = resolveStoredLyrics(song);
+  if (storedLyrics?.lyrics) {
+    return {
+      answer: storedLyrics.lyrics,
+      responseMode: "lyrics",
+      lookupMode: "stored-lyrics",
+      fallbackReason: null,
+      songsTableAvailable: songsTableAvailable === true,
+      songId: song ? String(song.songId || song.id || "").trim() : null,
+      context: song ? song.songContext || null : null,
+      lyricsSource: storedLyrics.lyricsSource || null,
+      lyricsConfidence: storedLyrics.lyricsConfidence || null
+    };
+  }
+
   const extraContext = song ? buildSongLyricsAnthropicContext(song) : null;
 
   if (!extraContext) {
@@ -501,7 +631,9 @@ async function resolveSongLyricsLookup(question, history = []) {
       fallbackReason: "song_not_found",
       songsTableAvailable: songsTableAvailable === true,
       songId: null,
-      context: null
+      context: null,
+      lyricsSource: null,
+      lyricsConfidence: null
     };
   }
 
@@ -519,7 +651,9 @@ async function resolveSongLyricsLookup(question, history = []) {
       fallbackReason: "lyrics_generation_incomplete",
       songsTableAvailable: songsTableAvailable === true,
       songId: String(song.songId || song.id || "").trim(),
-      context: song.songContext || null
+      context: song.songContext || null,
+      lyricsSource: "generated",
+      lyricsConfidence: "low"
     };
   }
 
@@ -530,7 +664,9 @@ async function resolveSongLyricsLookup(question, history = []) {
     fallbackReason: null,
     songsTableAvailable: songsTableAvailable === true,
     songId: String(song.songId || song.id || "").trim(),
-    context: song.songContext || null
+    context: song.songContext || null,
+    lyricsSource: "generated",
+    lyricsConfidence: "low"
   };
 }
 
@@ -906,6 +1042,11 @@ async function lookupSongByQuestion(question) {
   const context = buildSongContextSummary(song);
   const description = String(song.description || "").trim();
   const descriptionNormalized = String(song.descriptionNormalized || normalizeSongDescription(description)).trim();
+  const lyrics = String(song.lyrics || "").trim();
+  const lyricsSource = String(song.lyricsSource || "").trim();
+  const lyricsConfidence = String(song.lyricsConfidence || "").trim();
+  const parsedLyrics = String(song.parsedLyrics || "").trim();
+  const cachedLyrics = String(song.cachedLyrics || "").trim();
 
   return {
     title: song.title || title,
@@ -917,6 +1058,11 @@ async function lookupSongByQuestion(question) {
     sourceUrl,
     description,
     descriptionNormalized,
+    lyrics,
+    lyricsSource,
+    lyricsConfidence,
+    parsedLyrics,
+    cachedLyrics,
     songContext: context
   };
 }
@@ -1734,9 +1880,12 @@ function buildLogItem({
   answer,
   page,
   source,
+  responseMode,
   lookupMode,
   fallbackReason,
   songsTableAvailable,
+  lyricsSource,
+  lyricsConfidence,
   historyLength,
   responseTimeMs,
   status,
@@ -1757,9 +1906,12 @@ function buildLogItem({
     answer,
     page,
     source,
+    responseMode: responseMode || null,
     lookupMode: lookupMode || null,
     fallbackReason: fallbackReason || null,
     songsTableAvailable: typeof songsTableAvailable === "boolean" ? songsTableAvailable : null,
+    lyricsSource: lyricsSource || null,
+    lyricsConfidence: lyricsConfidence || null,
     historyLength,
     responseTimeMs,
     status,
@@ -1965,6 +2117,7 @@ exports.handler = async (event) => {
         answer: "No question provided",
         page,
         source: "error",
+        responseMode: null,
         historyLength,
         responseTimeMs,
         status: "error",
@@ -1989,13 +2142,19 @@ exports.handler = async (event) => {
     let lookupMode = null;
     let fallbackReason = null;
     let songsTableIsAvailable = songsTableAvailable === true;
+    let lyricsSource = null;
+    let lyricsConfidence = null;
+    let responseModeValue = responseMode;
 
     if (isSongQuestion) {
       const resolved = await resolveSongLookup(question, history, songIntent);
       lookupMode = resolved.lookupMode || null;
       fallbackReason = resolved.fallbackReason || null;
       songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
-      const resolvedMode = resolved.responseMode || responseMode;
+      responseModeValue = resolved.responseMode || responseModeValue;
+      lyricsSource = resolved.lyricsSource || null;
+      lyricsConfidence = resolved.lyricsConfidence || null;
+      const resolvedMode = responseModeValue;
 
       if (resolvedMode === "meaning") {
         answer = resolved.answer;
@@ -2091,6 +2250,9 @@ exports.handler = async (event) => {
       lookupMode,
       fallbackReason,
       songsTableAvailable: songsTableIsAvailable,
+      responseMode: responseModeValue,
+      lyricsSource,
+      lyricsConfidence,
       historyLength,
       responseTimeMs,
       status,
@@ -2125,6 +2287,9 @@ exports.handler = async (event) => {
         lookupMode: "error",
         fallbackReason: "handler_exception",
         songsTableAvailable: songsTableAvailable === true,
+        responseMode: null,
+        lyricsSource: null,
+        lyricsConfidence: null,
         historyLength,
         responseTimeMs,
         status: "error",

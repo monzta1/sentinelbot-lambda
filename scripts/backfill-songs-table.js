@@ -39,6 +39,64 @@ function normalizeDescription(value) {
     .trim();
 }
 
+function normalizeLyricsBlock(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractLyricsFromDescription(description) {
+  const lines = String(description || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return "";
+
+  const noisePatterns = [
+    /https?:\/\//i,
+    /\b(spotify|youtube|subscribe|follow|merch|pre-save|stream|watch|official video|out now|available now|link in bio|shorts)\b/i
+  ];
+  const sectionPattern = /^(?:[\(\[]?\s*(verse|chorus|bridge|intro|outro|pre-chorus|hook)(?:\s*\d+)?\s*[\)\]]?\s*[:\-–—]?\s*)$/i;
+
+  const kept = [];
+  let sectionCount = 0;
+  let lyricLineCount = 0;
+
+  for (const line of lines) {
+    if (noisePatterns.some((pattern) => pattern.test(line))) {
+      continue;
+    }
+
+    if (sectionPattern.test(line)) {
+      sectionCount += 1;
+      kept.push(line.replace(/[:\-–—\s]+$/g, "").trim());
+      continue;
+    }
+
+    const wordCount = line.split(/\s+/).filter(Boolean).length;
+    const lyricish = wordCount > 0 && wordCount <= 14 && /[A-Za-z]/.test(line);
+    if (lyricish) {
+      lyricLineCount += 1;
+      kept.push(line);
+    }
+  }
+
+  const looksStructured = sectionCount >= 2 || (sectionCount >= 1 && lyricLineCount >= 4) || lyricLineCount >= 10;
+  if (!looksStructured) return "";
+
+  const lyrics = normalizeLyricsBlock(kept.join("\n"));
+  return lyrics.length >= 100 ? lyrics : "";
+}
+
 function buildSongContextFromDescription(description, title = "") {
   const normalized = normalizeDescription(description);
   const fallbackTitle = String(title || "").trim();
@@ -174,6 +232,7 @@ async function loadEventStreamSongs() {
       const event = normalizeEventPayload(item);
       if (!event.songId || !event.title) continue;
       const canonicalTitle = deriveCanonicalTitle(event.title);
+      const eventLyrics = extractLyricsFromDescription(event.description || "");
       songs.push({
         songId: event.songId,
         id: event.songId,
@@ -189,6 +248,9 @@ async function loadEventStreamSongs() {
         durationSeconds: event.durationSeconds,
         description: event.description || "",
         descriptionNormalized: normalizeDescription(event.description || ""),
+        lyrics: eventLyrics,
+        lyricsSource: eventLyrics ? "youtube_description" : "",
+        lyricsConfidence: eventLyrics ? "medium" : "",
         songContext: buildSongContextFromDescription(event.description || "", event.title || ""),
         type: "official_release",
         source: "youtube",
@@ -205,10 +267,14 @@ async function loadEventStreamSongs() {
   return songs.map((song) => {
     const detail = details.get(song.songId) || {};
     const description = String(song.description || detail.description || "").trim();
+    const lyrics = String(song.lyrics || detail.lyrics || extractLyricsFromDescription(description)).trim();
     return {
       ...song,
       description,
       descriptionNormalized: normalizeDescription(description),
+      lyrics,
+      lyricsSource: String(song.lyricsSource || detail.lyricsSource || (lyrics ? "youtube_description" : "")).trim(),
+      lyricsConfidence: String(song.lyricsConfidence || detail.lyricsConfidence || (lyrics ? "medium" : "")).trim(),
       duration: song.duration || detail.duration || "",
       durationSeconds: Number(song.durationSeconds || 0) || Number(detail.durationSeconds || 0) || 0
     };
@@ -223,6 +289,9 @@ function buildItem(song) {
   const songContext = song?.songContext && typeof song.songContext === "object"
     ? song.songContext
     : buildSongContextFromDescription(song?.description || "", title);
+  const lyrics = String(song?.lyrics || "").trim();
+  const lyricsSource = String(song?.lyricsSource || "").trim();
+  const lyricsConfidence = String(song?.lyricsConfidence || "").trim();
   return {
     songId: String(song?.songId || song?.id || normalizedTitle).trim(),
     pk: String(song?.songId || song?.id || normalizedTitle).trim(),
@@ -236,6 +305,9 @@ function buildItem(song) {
     duration: String(song?.duration || "").trim(),
     description: String(song?.description || "").trim(),
     descriptionNormalized: normalizeDescription(song?.description || ""),
+    lyrics,
+    lyricsSource: lyricsSource || (lyrics ? "cached_parsed" : ""),
+    lyricsConfidence: lyricsConfidence || (lyrics ? "low" : ""),
     songContext,
     songContextTheme: String(songContext.theme || "").trim(),
     songContextMeaning: String(songContext.meaning || "").trim(),

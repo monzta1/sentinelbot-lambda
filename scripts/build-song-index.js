@@ -152,6 +152,9 @@ function buildSongRecord(song, trackRefs, releaseIndex) {
   const description = String(song.description || "").trim();
   const descriptionNormalized = normalizeDescription(description);
   const descriptionContext = buildSongContextFromDescription(description, title);
+  const lyrics = String(song.lyrics || "").trim();
+  const lyricsSource = String(song.lyricsSource || "").trim();
+  const lyricsConfidence = String(song.lyricsConfidence || "").trim();
   const songContext = {
     theme: String(descriptionContext.theme || theme).trim(),
     meaning: String(descriptionContext.meaning || song.thesis || meaningSummary || song.reference || title).trim(),
@@ -181,6 +184,9 @@ function buildSongRecord(song, trackRefs, releaseIndex) {
     meaningSummary,
     scriptureRef,
     scriptureQuote,
+    lyrics,
+    lyricsSource,
+    lyricsConfidence,
     tags,
     songContext,
     artwork: String(song.artwork || "").trim(),
