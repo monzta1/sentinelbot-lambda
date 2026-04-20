@@ -340,7 +340,7 @@ function buildSiteArtifactFromEvents(events) {
 }
 
 async function loadEventStreamPage(exclusiveStartKey) {
-  return dynamo.send(new QueryCommand({
+  const input = {
     TableName: TABLE_NAME,
     KeyConditionExpression: "#pk = :pk",
     ExpressionAttributeNames: {
@@ -349,10 +349,15 @@ async function loadEventStreamPage(exclusiveStartKey) {
     ExpressionAttributeValues: {
       ":pk": EVENT_STREAM_PK
     },
-    ExclusiveStartKey: exclusiveStartKey,
     Limit: EVENT_STREAM_PAGE_SIZE,
     ScanIndexForward: false
-  }));
+  };
+
+  if (exclusiveStartKey) {
+    input.ExclusiveStartKey = exclusiveStartKey;
+  }
+
+  return dynamo.send(new QueryCommand(input));
 }
 
 async function loadEventStreamItems() {
