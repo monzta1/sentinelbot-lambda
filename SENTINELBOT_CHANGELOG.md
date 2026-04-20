@@ -9,6 +9,7 @@ Versioning note:
 ## v1.4.31 - April 2026
 - Corrected the canonical Shieldbearer founding answer to April 20, 2025
 - Added nearby founding and launch phrasings so the same date stays consistent across Q&A variants
+- Added a direct "solo project, not a band" answer for founding-style questions
 
 ## v1.0 - April 2026
 - Initial deployment of SentinelBot Mark I
