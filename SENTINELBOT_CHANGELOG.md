@@ -208,3 +208,8 @@ Versioning note:
 ## v1.4.29 - April 2026
 - Fixed the lyrics cache-write path so generated lyrics can be stored back into SongsTable
 - Kept the stored-lyrics-first resolver order intact
+
+## v1.4.30 - April 2026
+- Changed the site publisher target path to the website root `site.json`
+- Kept `SITE_JSON_PATH` configurable for non-production overrides
+- Aligned the publisher output location with the GitHub Pages fetch path used by `timeline.html`
