@@ -184,3 +184,8 @@ Versioning note:
 - Stripped links and metadata from meaning responses before returning them
 - Added a meaning-only Anthropic context so explanation answers stay short and thematic
 - Kept lyrics and fact outputs on separate formatting contracts
+
+## v1.4.25 - April 2026
+- Hardened meaning response sanitization to remove promotional tail text
+- Rebuilt meaning responses from clean sentences to preserve the short-form contract
+- Kept the fact and lyrics response modes unchanged

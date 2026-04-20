@@ -1857,17 +1857,28 @@ function sanitizeMeaningResponse(answer) {
   const text = String(answer || "")
     .replace(/<a\b[^>]*>(.*?)<\/a>/gi, "$1")
     .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 
   if (!text) return "";
 
-  const lines = text
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .filter((sentence) => !/(spotify|youtube|listen on|watch on|dossier|link)/i.test(sentence))
+    .slice(0, 5);
+
+  if (sentences.length) {
+    return sentences.join("\n");
+  }
+
+  return text
     .split(/\r?\n+/)
     .map((line) => line.trim())
     .filter(Boolean)
-    .slice(0, 5);
-
-  return lines.join("\n");
+    .slice(0, 5)
+    .join("\n");
 }
 
 async function callAnthropic(question, history, extraContext = null) {
