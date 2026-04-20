@@ -505,10 +505,10 @@ async function resolveSongLyricsLookup(question, history = []) {
     };
   }
 
-  let answer = await callAnthropic(question, history, extraContext);
+  let answer = await callAnthropic(question, history, extraContext, { maxTokens: 1200 });
   if (isIncompleteLyricsAnswer(answer)) {
     const retryQuestion = `${question}\n\nPrevious response was incomplete. Return the full structured lyrics only, with verses and chorus intact. Do not summarize. Do not stop early.`;
-    answer = await callAnthropic(retryQuestion, history, extraContext);
+    answer = await callAnthropic(retryQuestion, history, extraContext, { maxTokens: 1600 });
   }
 
   if (isIncompleteLyricsAnswer(answer)) {
@@ -1881,7 +1881,7 @@ function sanitizeMeaningResponse(answer) {
     .join("\n");
 }
 
-async function callAnthropic(question, history, extraContext = null) {
+async function callAnthropic(question, history, extraContext = null, options = {}) {
   const systemPrompt = await getSystemPromptProduction();
   const systemBlocks = [
     {
@@ -1908,7 +1908,7 @@ async function callAnthropic(question, history, extraContext = null) {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 300,
+      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 300,
       system: systemBlocks,
       messages: [
         ...history.slice(-10),

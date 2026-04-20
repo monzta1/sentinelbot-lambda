@@ -189,3 +189,8 @@ Versioning note:
 - Hardened meaning response sanitization to remove promotional tail text
 - Rebuilt meaning responses from clean sentences to preserve the short-form contract
 - Kept the fact and lyrics response modes unchanged
+
+## v1.4.26 - April 2026
+- Raised the lyrics generation token budget to prevent clipped verses
+- Added a larger retry ceiling for incomplete lyric outputs
+- Left meaning and fact response modes unchanged
