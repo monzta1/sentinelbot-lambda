@@ -475,8 +475,8 @@ async function lookupSongStrictResponse(question) {
 
 async function resolveSongMeaningLookup(question, history = []) {
   const song = await lookupSongByQuestion(question);
-  const extraContext = song ? buildSongAnthropicContext(song) : null;
-  const answer = await callAnthropic(question, history, extraContext);
+  const extraContext = song ? buildSongMeaningAnthropicContext(song) : null;
+  const answer = sanitizeMeaningResponse(await callAnthropic(question, history, extraContext));
 
   return {
     answer,
@@ -1821,6 +1821,22 @@ function buildSongAnthropicContext(song) {
   return lines.join("\n");
 }
 
+function buildSongMeaningAnthropicContext(song) {
+  const context = buildSongAnthropicContext(song);
+  if (!context) return null;
+
+  return [
+    context,
+    "",
+    "Meaning mode:",
+    "- Respond in 3 to 5 lines max.",
+    "- Do not include links.",
+    "- Do not include lyrics.",
+    "- Do not include metadata lines.",
+    "- Focus on theme, meaning, and spiritual tone."
+  ].join("\n");
+}
+
 function buildSongLyricsAnthropicContext(song) {
   const context = buildSongAnthropicContext(song);
   if (!context) return null;
@@ -1835,6 +1851,23 @@ function buildSongLyricsAnthropicContext(song) {
     "- Keep the output in lyrical sections instead of a summary.",
     "- If the source data does not contain full lyrics, say so plainly."
   ].join("\n");
+}
+
+function sanitizeMeaningResponse(answer) {
+  const text = String(answer || "")
+    .replace(/<a\b[^>]*>(.*?)<\/a>/gi, "$1")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+
+  if (!text) return "";
+
+  const lines = text
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 5);
+
+  return lines.join("\n");
 }
 
 async function callAnthropic(question, history, extraContext = null) {

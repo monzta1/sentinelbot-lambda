@@ -179,3 +179,8 @@ Versioning note:
 - Introduced intent-specific response modes for fact, meaning, and lyrics outputs
 - Enforced strict single-line fact formatting and bounded lyrics retry handling
 - Standardized meaning responses to a consistent short-form contract
+
+## v1.4.24 - April 2026
+- Stripped links and metadata from meaning responses before returning them
+- Added a meaning-only Anthropic context so explanation answers stay short and thematic
+- Kept lyrics and fact outputs on separate formatting contracts
