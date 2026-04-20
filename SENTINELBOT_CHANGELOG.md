@@ -204,3 +204,7 @@ Versioning note:
 - Cached Anthropic-generated lyrics back into the Songs table as `generated`
 - Preserved manual and YouTube-derived lyrics as higher-priority sources
 - Kept future lyrics lookups deterministic once a source has been stored
+
+## v1.4.29 - April 2026
+- Fixed the lyrics cache-write path so generated lyrics can be stored back into SongsTable
+- Kept the stored-lyrics-first resolver order intact

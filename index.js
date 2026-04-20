@@ -34,6 +34,10 @@ let cachedSongIndex = null;
 let songsTableAvailable = null;
 let songsTableAvailabilityPromise = null;
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
 function normalizeReleaseTitle(value) {
   return String(value || "")
     .toLowerCase()
