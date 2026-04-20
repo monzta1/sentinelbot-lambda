@@ -174,3 +174,8 @@ Versioning note:
 - Split song intent routing into release, meaning, and hybrid paths
 - Ensured meaning/explanation queries bypass cached release answers
 - Removed duplicate song-intent helpers so the handler has one canonical classifier
+
+## v1.4.23 - April 2026
+- Introduced intent-specific response modes for fact, meaning, and lyrics outputs
+- Enforced strict single-line fact formatting and bounded lyrics retry handling
+- Standardized meaning responses to a consistent short-form contract

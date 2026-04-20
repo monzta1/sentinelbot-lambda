@@ -283,6 +283,13 @@ function formatPublishedAtForStrictLookup(value) {
   return `${datePart} (${timePart} UTC)`;
 }
 
+function formatFactResponse(title, publishedAt) {
+  const cleanTitle = String(title || "").trim();
+  const cleanDate = formatPublishedAtForStrictLookup(publishedAt);
+  if (!cleanTitle || !cleanDate) return null;
+  return `${cleanTitle} — ${cleanDate}`;
+}
+
 function extractReleaseQueryTitle(question) {
   const value = normalizeQuestion(question);
   if (!value) return "";
@@ -473,6 +480,7 @@ async function resolveSongMeaningLookup(question, history = []) {
 
   return {
     answer,
+    responseMode: "meaning",
     lookupMode: extraContext ? "song-context-anthropic" : "anthropic-song-intent",
     fallbackReason: null,
     songsTableAvailable: songsTableAvailable === true,
@@ -481,16 +489,66 @@ async function resolveSongMeaningLookup(question, history = []) {
   };
 }
 
+async function resolveSongLyricsLookup(question, history = []) {
+  const song = await lookupSongByQuestion(question);
+  const extraContext = song ? buildSongLyricsAnthropicContext(song) : null;
+
+  if (!extraContext) {
+    return {
+      answer: "Lyrics unavailable right now.",
+      responseMode: "lyrics",
+      lookupMode: "song-lyrics-miss",
+      fallbackReason: "song_not_found",
+      songsTableAvailable: songsTableAvailable === true,
+      songId: null,
+      context: null
+    };
+  }
+
+  let answer = await callAnthropic(question, history, extraContext);
+  if (isIncompleteLyricsAnswer(answer)) {
+    const retryQuestion = `${question}\n\nPrevious response was incomplete. Return the full structured lyrics only, with verses and chorus intact. Do not summarize. Do not stop early.`;
+    answer = await callAnthropic(retryQuestion, history, extraContext);
+  }
+
+  if (isIncompleteLyricsAnswer(answer)) {
+    return {
+      answer: "Lyrics unavailable right now.",
+      responseMode: "lyrics",
+      lookupMode: "song-lyrics-incomplete",
+      fallbackReason: "lyrics_generation_incomplete",
+      songsTableAvailable: songsTableAvailable === true,
+      songId: String(song.songId || song.id || "").trim(),
+      context: song.songContext || null
+    };
+  }
+
+  return {
+    answer,
+    responseMode: "lyrics",
+    lookupMode: "song-lyrics-anthropic",
+    fallbackReason: null,
+    songsTableAvailable: songsTableAvailable === true,
+    songId: String(song.songId || song.id || "").trim(),
+    context: song.songContext || null
+  };
+}
+
 async function resolveSongLookup(question, history = [], intent = classifySongIntent(question)) {
+  const responseMode = getResponseMode(intent);
   const available = await getSongsTableAvailability();
-  if (intent === "meaning" || intent === "hybrid") {
+  if (responseMode === "meaning") {
     return resolveSongMeaningLookup(question, history);
+  }
+  if (responseMode === "lyrics") {
+    return resolveSongLyricsLookup(question, history);
   }
 
   const strictSongResponse = available ? await lookupSongStrictResponse(question) : null;
   if (strictSongResponse) {
     return {
       answer: strictSongResponse,
+      responseMode: "fact",
       lookupMode: "strict-lookup",
       fallbackReason: null,
       songsTableAvailable: available
@@ -501,21 +559,23 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
     const song = await lookupSongByQuestion(question);
     if (song) {
       if (isReleaseQuestion(question)) {
-        const answer = song.publishedAt
-          ? `${song.title} was released on ${song.publishedAt}. <a href="${song.sourceUrl}" target="_blank">Release</a>`
-          : `${song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
-        return {
-          answer,
-          lookupMode: "degraded-no-songs-table",
-          fallbackReason: "songs_table_unavailable",
-          songsTableAvailable: available
-        };
+        const answer = formatFactResponse(song.title, song.publishedAt);
+        if (answer) {
+          return {
+            answer,
+            responseMode: "fact",
+            lookupMode: "degraded-no-songs-table",
+            fallbackReason: "songs_table_unavailable",
+            songsTableAvailable: available
+          };
+        }
       }
 
       if (isSongMeaningQuestion(question)) {
         const summary = song.summary ? `${song.summary} ` : "";
         return {
           answer: `${song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+          responseMode: "meaning",
           lookupMode: "degraded-no-songs-table",
           fallbackReason: "songs_table_unavailable",
           songsTableAvailable: available
@@ -524,6 +584,7 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
 
       return {
         answer: `${song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+        responseMode: "meaning",
         lookupMode: "degraded-no-songs-table",
         fallbackReason: "songs_table_unavailable",
         songsTableAvailable: available
@@ -543,7 +604,8 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
     if (isReleaseQuestion(question)) {
       if (song.publishedAt) {
         return {
-          answer: `${song.canonicalTitle || song.title} was released on ${song.publishedAt}. <a href="${song.sourceUrl}" target="_blank">Release</a>`,
+          answer: formatFactResponse(song.canonicalTitle || song.title, song.publishedAt),
+          responseMode: "fact",
           lookupMode: "catalog-lookup",
           fallbackReason: null,
           songsTableAvailable: available
@@ -552,7 +614,8 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
 
       if (song.releaseLabel) {
         return {
-          answer: `${song.canonicalTitle || song.title} is listed as ${song.releaseLabel}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+          answer: `${song.canonicalTitle || song.title} — ${song.releaseLabel}`,
+          responseMode: "fact",
           lookupMode: "catalog-lookup",
           fallbackReason: null,
           songsTableAvailable: available
@@ -560,7 +623,8 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
       }
 
       return {
-        answer: `${song.canonicalTitle || song.title} is indexed in the catalog, but I do not have a release timestamp yet. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+        answer: null,
+        responseMode: "fact",
         lookupMode: "catalog-lookup",
         fallbackReason: null,
         songsTableAvailable: available
@@ -571,6 +635,7 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
       const summary = song.summary ? `${song.summary} ` : "";
       return {
         answer: `${song.canonicalTitle || song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+        responseMode: "meaning",
         lookupMode: "catalog-lookup",
         fallbackReason: null,
         songsTableAvailable: available
@@ -579,6 +644,7 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
 
     return {
       answer: `${song.canonicalTitle || song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+      responseMode: "meaning",
       lookupMode: "catalog-lookup",
       fallbackReason: null,
       songsTableAvailable: available
@@ -588,7 +654,8 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
   const release = lookupReleaseByQuestion(question);
   if (release) {
     return {
-      answer: `${release.title} was released on ${release.publishedAt}. <a href="${release.sourceUrl}" target="_blank">Release</a>`,
+      answer: formatFactResponse(release.title, release.publishedAt),
+      responseMode: "fact",
       lookupMode: "release-index",
       fallbackReason: null,
       songsTableAvailable: available
@@ -656,7 +723,7 @@ function isSongContextQuestion(question) {
 
 function classifySongIntent(question) {
   const normalized = normalizeQuestion(question);
-  if (!normalized) return "hybrid";
+  if (!normalized) return null;
 
   const releaseSignals = [
     "when was",
@@ -679,9 +746,30 @@ function classifySongIntent(question) {
     "scripture",
     "story"
   ];
+  const lyricSignals = [
+    "lyrics",
+    "lyric",
+    "full lyrics",
+    "verse",
+    "chorus",
+    "bridge",
+    "outro",
+    "words to"
+  ];
 
   const hasReleaseSignal = releaseSignals.some((signal) => normalized.includes(signal));
   const hasMeaningSignal = meaningSignals.some((signal) => normalized.includes(signal));
+  const hasLyricSignal = lyricSignals.some((signal) => normalized.includes(signal));
+  const title = extractReleaseQueryTitle(question);
+  const hasSongTitle = Boolean(title && normalizeReleaseTitle(title));
+
+  if (!hasReleaseSignal && !hasMeaningSignal && !hasLyricSignal && !hasSongTitle) {
+    return null;
+  }
+
+  if (hasLyricSignal && !hasReleaseSignal) {
+    return "lyrics";
+  }
 
   if (hasReleaseSignal && !hasMeaningSignal) {
     return "release";
@@ -695,7 +783,11 @@ function classifySongIntent(question) {
     return "hybrid";
   }
 
-  return "hybrid";
+  if (hasSongTitle) {
+    return "hybrid";
+  }
+
+  return "meaning";
 }
 
 function isSongLookupQuestion(question) {
@@ -716,6 +808,32 @@ function isSongLookupQuestion(question) {
   const contextIntent = isSongContextQuestion(question);
 
   return knownSong || explicitSongIntent || contextIntent;
+}
+
+function getResponseMode(intent) {
+  if (intent === "release") return "fact";
+  if (intent === "lyrics") return "lyrics";
+  return "meaning";
+}
+
+function isIncompleteLyricsAnswer(answer) {
+  const text = String(answer || "").trim();
+  if (!text) return true;
+
+  const lower = text.toLowerCase();
+  const hasSectionMarkers = /(verse\s*\d*|chorus|bridge|outro|pre-chorus)/i.test(lower);
+  const sectionCount = [
+    "verse",
+    "chorus",
+    "bridge",
+    "outro",
+    "pre-chorus"
+  ].filter((marker) => lower.includes(marker)).length;
+  const lastLine = text.split(/\r?\n/).filter(Boolean).pop() || text;
+  const endsAbruptly = /[:\-–—…]$/.test(lastLine.trim()) || /\.\.\.$/.test(lastLine.trim());
+  const tooShort = text.length < 180;
+
+  return tooShort || endsAbruptly || (hasSectionMarkers && sectionCount < 2);
 }
 
 function buildSongContextSummary(song) {
@@ -1383,8 +1501,7 @@ function getSiteIntentResponse() {
 
 async function findCachedAnswer(question) {
   if (!question) return null;
-  const songIntent = classifySongIntent(question);
-  if (songIntent === "meaning" || songIntent === "hybrid") return null;
+  if (classifySongIntent(question)) return null;
 
   for (const route of FAQ_ROUTES) {
     if (route.match(question)) {
@@ -1704,6 +1821,22 @@ function buildSongAnthropicContext(song) {
   return lines.join("\n");
 }
 
+function buildSongLyricsAnthropicContext(song) {
+  const context = buildSongAnthropicContext(song);
+  if (!context) return null;
+
+  return [
+    context,
+    "",
+    "Lyrics mode:",
+    "- Return the full structured lyrics if they are available in the source context.",
+    "- Do not stop early.",
+    "- Include verses, chorus, bridge, and outro when present.",
+    "- Keep the output in lyrical sections instead of a summary.",
+    "- If the source data does not contain full lyrics, say so plainly."
+  ].join("\n");
+}
+
 async function callAnthropic(question, history, extraContext = null) {
   const systemPrompt = await getSystemPromptProduction();
   const systemBlocks = [
@@ -1803,7 +1936,8 @@ exports.handler = async (event) => {
     }
 
     const songIntent = classifySongIntent(question);
-    const isSongQuestion = isSongLookupQuestion(question) || songIntent === "release" || songIntent === "meaning" || songIntent === "hybrid";
+    const responseMode = songIntent ? getResponseMode(songIntent) : null;
+    const isSongQuestion = Boolean(songIntent) || isSongLookupQuestion(question);
     let answer = null;
     let status = "success";
     let source = "anthropic";
@@ -1817,10 +1951,14 @@ exports.handler = async (event) => {
       lookupMode = resolved.lookupMode || null;
       fallbackReason = resolved.fallbackReason || null;
       songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
+      const resolvedMode = resolved.responseMode || responseMode;
 
-      if (songIntent === "meaning" || songIntent === "hybrid") {
+      if (resolvedMode === "meaning") {
         answer = resolved.answer;
         source = resolved.lookupMode === "song-context-anthropic" ? "anthropic-song-context" : "anthropic";
+      } else if (resolvedMode === "lyrics") {
+        answer = resolved.answer;
+        source = resolved.lookupMode === "song-lyrics-anthropic" ? "anthropic-song-lyrics" : "anthropic";
       } else {
         const structuredSongModes = new Set(["strict-lookup", "catalog-lookup", "release-index", "degraded-no-songs-table"]);
         const hasStructuredAnswer = resolved.answer && structuredSongModes.has(resolved.lookupMode);
