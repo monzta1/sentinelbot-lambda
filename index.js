@@ -1522,8 +1522,12 @@ const recentQuestions = new Map();
 
 const FAQ_ROUTES = [
   {
-    match: (question) => question === "what is shieldbearer" || question === "who is shieldbearer",
+    match: (question) => question === "what is shieldbearer" || question === "who is shieldbearer" || question.includes("is shieldbearer a band") || question.includes("is shieldbearer a solo project") || question.includes("band or solo project"),
     answer: 'Shieldbearer is a Christian metal project built on one mission: proclaim Christ clearly through heavy music. <a href="https://shieldbearerusa.com/about.html" target="_blank">About</a> <a href="https://shieldbearerusa.com/story.html" target="_blank">The Story</a>'
+  },
+  {
+    match: (question) => question.includes("when was shieldbearer founded") || question.includes("when did shieldbearer launch") || question.includes("when was shieldbearer started") || question.includes("when was the band founded") || question.includes("when did the band launch") || question.includes("when was the band started") || question.includes("when was the project founded") || question.includes("when did the project launch") || question.includes("when did shieldbearer start"),
+    answer: 'Shieldbearer is a solo project, not a band. It was founded by Moncy Abraham on April 20, 2025. <a href="https://shieldbearerusa.com/story.html" target="_blank">Read the full story</a>'
   },
   {
     match: (question) => question === "are the guitars real" || (question.includes("guitar") && (question.includes("real") || question.includes("actual"))),
