@@ -594,8 +594,26 @@ async function lookupSongStrictResponse(question) {
 
 async function resolveSongMeaningLookup(question, history = []) {
   const song = await lookupSongByQuestion(question);
+  const localMeaning = buildLocalSongMeaningAnswer(song);
+  if (localMeaning) {
+    return {
+      answer: localMeaning,
+      responseMode: "meaning",
+      lookupMode: "song-context-local",
+      fallbackReason: null,
+      songsTableAvailable: songsTableAvailable === true,
+      songId: song ? String(song.songId || song.id || "").trim() : null,
+      context: song ? song.songContext || null : null
+    };
+  }
+
   const extraContext = song ? buildSongMeaningAnthropicContext(song) : null;
-  const answer = sanitizeMeaningResponse(await callAnthropic(question, history, extraContext));
+  const answer = sanitizeMeaningResponse(await callAnthropic(question, history, extraContext, {
+    maxTokens: 140,
+    intent: "song-meaning",
+    normalizedQuery: normalizeCacheQuestion(question),
+    cacheHit: false
+  }));
 
   return {
     answer,
@@ -641,10 +659,20 @@ async function resolveSongLyricsLookup(question, history = []) {
     };
   }
 
-  let answer = await callAnthropic(question, history, extraContext, { maxTokens: 1200 });
+  let answer = await callAnthropic(question, history, extraContext, {
+    maxTokens: 800,
+    intent: "song-lyrics",
+    normalizedQuery: normalizeCacheQuestion(question),
+    cacheHit: false
+  });
   if (isIncompleteLyricsAnswer(answer)) {
     const retryQuestion = `${question}\n\nPrevious response was incomplete. Return the full structured lyrics only, with verses and chorus intact. Do not summarize. Do not stop early.`;
-    answer = await callAnthropic(retryQuestion, history, extraContext, { maxTokens: 1600 });
+    answer = await callAnthropic(retryQuestion, history, extraContext, {
+      maxTokens: 1000,
+      intent: "song-lyrics",
+      normalizedQuery: normalizeCacheQuestion(question),
+      cacheHit: false
+    });
   }
 
   const sanitizedAnswer = sanitizeLyricsResponse(answer);
@@ -1518,6 +1546,23 @@ const CACHED_ANSWERS = {
   "what is ai": 'A tool. Same as a guitar, a reverb pedal, or a DAW. What matters is what you build with it and why. Shieldbearer uses it to serve the message, not replace it. <a href="https://shieldbearerusa.com/ai-and-creativity.html" target="_blank">AI and Creativity</a>'
 };
 
+const HARD_CACHE_ANSWERS = new Map([
+  ["what is sentinelbot", 'SentinelBot is Shieldbearer\'s Watchman-class Guardian Intelligence. It answers questions about the music, the mission, and the theology from the official site. <a href="https://shieldbearerusa.com/sentinelbot.html" target="_blank">SentinelBot</a>'],
+  ["what is galilean about", "Galilean is cosmos and incarnation. The word carries two worlds: Galileo's moons of Jupiter, and Galilee where Jesus walked. Same word. Different everything. That tension is the song. John 1:14."],
+  ["what is prison break about", "Prison Break explores freedom from sin and spiritual captivity. Christ breaks the chains and leads the captives out."],
+  ["what is shieldbearer", CACHED_ANSWERS["what is shieldbearer"]],
+  ["who is shieldbearer", CACHED_ANSWERS["who is shieldbearer"]],
+  ["what is the site about", CACHED_ANSWERS["what is shieldbearer"]],
+  ["what is the project about", CACHED_ANSWERS["what is shieldbearer"]],
+  ["about shieldbearer", CACHED_ANSWERS["what is shieldbearer"]],
+  ["when was shieldbearer founded", CACHED_ANSWERS["when was shieldbearer founded"]],
+  ["when did shieldbearer launch", CACHED_ANSWERS["when did shieldbearer launch"]],
+  ["when was shieldbearer started", CACHED_ANSWERS["when was shieldbearer started"]],
+  ["when was the band founded", CACHED_ANSWERS["when was the band founded"]],
+  ["when did the band launch", CACHED_ANSWERS["when did the band launch"]],
+  ["when was the band started", CACHED_ANSWERS["when was the band started"]]
+]);
+
 const recentQuestions = new Map();
 
 const FAQ_ROUTES = [
@@ -1643,6 +1688,15 @@ function normalizeQuestion(q) {
   return (q || "").toLowerCase().trim();
 }
 
+function normalizeCacheQuestion(q) {
+  return String(q || "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function isSiteIntentQuestion(question) {
   if (!question) return false;
 
@@ -1664,7 +1718,11 @@ function getSiteIntentResponse() {
 
 async function findCachedAnswer(question) {
   if (!question) return null;
-  if (classifySongIntent(question)) return null;
+  const normalizedCacheQuestion = normalizeCacheQuestion(question);
+  const hardCachedAnswer = HARD_CACHE_ANSWERS.get(normalizedCacheQuestion);
+  if (hardCachedAnswer) {
+    return hardCachedAnswer;
+  }
 
   for (const route of FAQ_ROUTES) {
     if (route.match(question)) {
@@ -1778,38 +1836,6 @@ async function findCachedAnswer(question) {
 
   if (question.includes("is using ai cheating") || question.includes("using ai cheating"))
     return CACHED_ANSWERS["is ai cheating"];
-
-  const strictSongResponse = await lookupSongStrictResponse(question);
-  if (strictSongResponse) {
-    return strictSongResponse;
-  }
-
-  const release = lookupReleaseByQuestion(question);
-  if (release) {
-    return `${release.title} was released on ${release.publishedAt}. <a href="${release.sourceUrl}" target="_blank">Release</a>`;
-  }
-
-  const song = await lookupSongByQuestion(question);
-  if (song) {
-    if (isReleaseQuestion(question)) {
-      if (song.publishedAt) {
-        return `${song.title} was released on ${song.publishedAt}. <a href="${song.sourceUrl}" target="_blank">Release</a>`;
-      }
-
-      if (song.releaseLabel) {
-        return `${song.title} is listed as ${song.releaseLabel}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
-      }
-
-      return `${song.title} is indexed in the catalog, but I do not have a release timestamp yet. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
-    }
-
-    if (isSongMeaningQuestion(question)) {
-      const summary = song.summary ? `${song.summary} ` : "";
-      return `${song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
-    }
-
-    return `${song.title}. <a href="${song.meaningUrl}" target="_blank">Song dossier</a>`;
-  }
 
   return null;
 }
@@ -1977,12 +2003,10 @@ function buildSongAnthropicContext(song) {
   if (Array.isArray(context.scriptureReferences) && context.scriptureReferences.length) {
     lines.push(`- Scripture: ${context.scriptureReferences.join(", ")}`);
   }
-  if (song.description) {
-    lines.push(`- Description: ${String(song.description).slice(0, 600)}`);
-  }
-  if (song.meaningUrl) lines.push(`- Dossier URL: ${song.meaningUrl}`);
-  if (song.sourceUrl) lines.push(`- Source URL: ${song.sourceUrl}`);
   if (context.summary) lines.push(`- Summary: ${context.summary}`);
+  if (!context.summary && song.description) {
+    lines.push(`- Description: ${String(song.description).slice(0, 240)}`);
+  }
 
   lines.push("");
   lines.push("Answer the user's question about this specific track in Shieldbearer's voice. Use the scripture or theological angle that fits. If the catalog data is thin, answer honestly from the mission without filler. Do not invent facts not present above or in the system prompt. Include the dossier URL or source URL as an HTML anchor if you reference the track's page.");
@@ -2004,6 +2028,26 @@ function buildSongMeaningAnthropicContext(song) {
     "- Do not include metadata lines.",
     "- Focus on theme, meaning, and spiritual tone."
   ].join("\n");
+}
+
+function buildLocalSongMeaningAnswer(song) {
+  if (!song) return null;
+
+  const title = String(song.canonicalTitle || song.title || "").trim();
+  if (!title) return null;
+
+  const context = song.songContext && typeof song.songContext === "object" ? song.songContext : {};
+  const summary = String(context.summary || context.meaning || context.theme || "").trim();
+  if (!summary) return null;
+
+  const cleanSummary = summary
+    .replace(/\s+/g, " ")
+    .replace(/\b(read|see|listen|watch)\b.*$/i, "")
+    .trim();
+
+  if (!cleanSummary) return null;
+
+  return `${title} explores ${cleanSummary}`;
 }
 
 function buildSongLyricsAnthropicContext(song) {
@@ -2103,7 +2147,21 @@ async function persistGeneratedLyricsToSongsTable(song, lyrics) {
 }
 
 async function callAnthropic(question, history, extraContext = null, options = {}) {
+  const model = process.env.ANTHROPIC_FALLBACK_MODEL || "claude-haiku-4-5-20251001";
+  const normalizedQuery = String(options.normalizedQuery || normalizeCacheQuestion(question));
   const systemPrompt = await getSystemPromptProduction();
+  const systemSize = String(systemPrompt || "").length + String(extraContext || "").length;
+  const inputSize = String(question || "").length + systemSize + JSON.stringify(history || []).length;
+  console.log(JSON.stringify({
+    event: "anthropic-call-start",
+    intent: options.intent || null,
+    normalizedQuery,
+    cacheHit: Boolean(options.cacheHit),
+    model,
+    inputSize,
+    estimatedInputTokens: Math.ceil(inputSize / 4)
+  }));
+
   const systemBlocks = [
     {
       type: "text",
@@ -2128,7 +2186,7 @@ async function callAnthropic(question, history, extraContext = null, options = {
       "anthropic-version": "2023-06-01"
     },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
+      model,
       max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 300,
       system: systemBlocks,
       messages: [
@@ -2144,7 +2202,31 @@ async function callAnthropic(question, history, extraContext = null, options = {
     throw new Error(`Anthropic error ${res.status}: ${JSON.stringify(data)}`);
   }
 
-  return data?.content?.[0]?.text || "Signal lost. Try again.";
+  const output = data?.content?.[0]?.text || "Signal lost. Try again.";
+  const outputSize = String(output).length;
+  const estimatedInputTokens = Math.ceil(inputSize / 4);
+  const estimatedOutputTokens = Math.ceil(outputSize / 4);
+  const inputCostPerMillion = Number(process.env.ANTHROPIC_INPUT_COST_PER_MILLION_TOKENS || "0");
+  const outputCostPerMillion = Number(process.env.ANTHROPIC_OUTPUT_COST_PER_MILLION_TOKENS || "0");
+  const estimatedCostUsd =
+    inputCostPerMillion > 0 || outputCostPerMillion > 0
+      ? ((estimatedInputTokens * inputCostPerMillion) + (estimatedOutputTokens * outputCostPerMillion)) / 1000000
+      : null;
+
+  console.log(JSON.stringify({
+    event: "anthropic-call-complete",
+    intent: options.intent || null,
+    normalizedQuery,
+    cacheHit: Boolean(options.cacheHit),
+    model,
+    inputSize,
+    outputSize,
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    estimatedCostUsd
+  }));
+
+  return output;
 }
 
 exports.handler = async (event) => {
@@ -2201,9 +2283,6 @@ exports.handler = async (event) => {
       };
     }
 
-    const songIntent = classifySongIntent(question);
-    const responseMode = songIntent ? getResponseMode(songIntent) : null;
-    const isSongQuestion = Boolean(songIntent) || isSongLookupQuestion(question);
     let answer = null;
     let status = "success";
     let source = "anthropic";
@@ -2213,72 +2292,91 @@ exports.handler = async (event) => {
     let songsTableIsAvailable = songsTableAvailable === true;
     let lyricsSource = null;
     let lyricsConfidence = null;
-    let responseModeValue = responseMode;
+    let responseModeValue = null;
 
-    if (isSongQuestion) {
-      const resolved = await resolveSongLookup(question, history, songIntent);
-      lookupMode = resolved.lookupMode || null;
-      fallbackReason = resolved.fallbackReason || null;
-      songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
-      responseModeValue = resolved.responseMode || responseModeValue;
-      lyricsSource = resolved.lyricsSource || null;
-      lyricsConfidence = resolved.lyricsConfidence || null;
-      const resolvedMode = responseModeValue;
+    const cachedAnswer = await findCachedAnswer(question);
+    if (cachedAnswer) {
+      answer = cachedAnswer;
+      source = "app-cache-hit";
+      lookupMode = "cache-hit";
+    } else {
+      const songIntent = classifySongIntent(question);
+      const responseMode = songIntent ? getResponseMode(songIntent) : null;
+      const isSongQuestion = Boolean(songIntent) || isSongLookupQuestion(question);
+      responseModeValue = responseMode;
 
-      if (resolvedMode === "meaning") {
-        answer = resolved.answer;
-        source = resolved.lookupMode === "song-context-anthropic" ? "anthropic-song-context" : "anthropic";
-      } else if (resolvedMode === "lyrics") {
-        answer = resolved.answer;
-        source = resolved.lookupMode === "song-lyrics-anthropic" ? "anthropic-song-lyrics" : "anthropic";
-      } else {
-        const structuredSongModes = new Set(["strict-lookup", "catalog-lookup", "release-index", "degraded-no-songs-table"]);
-        const hasStructuredAnswer = resolved.answer && structuredSongModes.has(resolved.lookupMode);
+      if (isSongQuestion) {
+        const resolved = await resolveSongLookup(question, history, songIntent);
+        lookupMode = resolved.lookupMode || null;
+        fallbackReason = resolved.fallbackReason || null;
+        songsTableIsAvailable = Boolean(resolved.songsTableAvailable);
+        responseModeValue = resolved.responseMode || responseModeValue;
+        lyricsSource = resolved.lyricsSource || null;
+        lyricsConfidence = resolved.lyricsConfidence || null;
+        const resolvedMode = responseModeValue;
 
-        if (hasStructuredAnswer) {
+        if (resolvedMode === "meaning") {
           answer = resolved.answer;
-          source = "app-cache-hit";
-        } else if (!songsTableIsAvailable && !resolved.answer) {
-          answer = "SongsTable unavailable. Ask again later or check the catalog.";
-          status = "error";
-          source = "error";
-          errorMessage = "SongsTable unavailable";
-          lookupMode = lookupMode || "degraded-no-songs-table";
-          fallbackReason = fallbackReason || "songs_table_unavailable";
-          console.warn(JSON.stringify({
-            songsTableAvailable: false,
-            lookupMode,
-            fallbackReason,
-            lookupSource: "songs-table",
-            responseMode: "degraded-no-songs-table"
-          }));
+          source = resolved.lookupMode === "song-context-anthropic" ? "anthropic-song-context" : "anthropic";
+        } else if (resolvedMode === "lyrics") {
+          answer = resolved.answer;
+          source = resolved.lookupMode === "song-lyrics-anthropic" ? "anthropic-song-lyrics" : "anthropic";
         } else {
-          const song = await lookupSongByQuestion(question);
-          const extraContext = song ? buildSongAnthropicContext(song) : null;
-          try {
-            answer = await callAnthropic(question, history, extraContext);
-            source = extraContext ? "anthropic-song-context" : "anthropic";
-            lookupMode = extraContext ? "anthropic-with-db" : (lookupMode || "anthropic-only");
-          } catch (err) {
-            answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
+          const structuredSongModes = new Set(["strict-lookup", "catalog-lookup", "release-index", "degraded-no-songs-table", "song-context-local"]);
+          const hasStructuredAnswer = resolved.answer && structuredSongModes.has(resolved.lookupMode);
+
+          if (hasStructuredAnswer) {
+            answer = resolved.answer;
+            source = "app-cache-hit";
+          } else if (!songsTableIsAvailable && !resolved.answer) {
+            answer = "SongsTable unavailable. Ask again later or check the catalog.";
             status = "error";
             source = "error";
-            errorMessage = err.message;
-            lookupMode = lookupMode || "song-miss";
-            fallbackReason = fallbackReason || "anthropic_failed";
+            errorMessage = "SongsTable unavailable";
+            lookupMode = lookupMode || "degraded-no-songs-table";
+            fallbackReason = fallbackReason || "songs_table_unavailable";
+            console.warn(JSON.stringify({
+              songsTableAvailable: false,
+              lookupMode,
+              fallbackReason,
+              lookupSource: "songs-table",
+              responseMode: "degraded-no-songs-table"
+            }));
+          } else {
+            const song = await lookupSongByQuestion(question);
+            const extraContext = song ? buildSongAnthropicContext(song) : null;
+            try {
+              answer = await callAnthropic(question, history, extraContext, {
+                maxTokens: 120,
+                intent: "general-song-fallback",
+                normalizedQuery: normalizeCacheQuestion(question),
+                cacheHit: false
+              });
+              source = extraContext ? "anthropic-song-context" : "anthropic";
+              lookupMode = extraContext ? "anthropic-with-db" : (lookupMode || "anthropic-only");
+            } catch (err) {
+              answer = "That track is in the catalog but I do not have the full breakdown yet. See the complete catalog at <a href=\"https://shieldbearerusa.com/music.html\" target=\"_blank\">Music</a> or on Spotify: <a href=\"https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz\" target=\"_blank\">Shieldbearer on Spotify</a>";
+              status = "error";
+              source = "error";
+              errorMessage = err.message;
+              lookupMode = lookupMode || "song-miss";
+              fallbackReason = fallbackReason || "anthropic_failed";
+            }
           }
         }
-      }
-    } else if (isSiteIntentQuestion(question)) {
-      answer = getSiteIntentResponse();
-      source = "site-intent";
-      lookupMode = "site-intent";
-      fallbackReason = null;
-    } else {
-      answer = await findCachedAnswer(question);
-      if (!answer) {
+      } else if (isSiteIntentQuestion(question)) {
+        answer = getSiteIntentResponse();
+        source = "site-intent";
+        lookupMode = "site-intent";
+        fallbackReason = null;
+      } else {
         try {
-          answer = await callAnthropic(question, history);
+          answer = await callAnthropic(question, history, null, {
+            maxTokens: 120,
+            intent: "general-fallback",
+            normalizedQuery: normalizeCacheQuestion(question),
+            cacheHit: false
+          });
         } catch (err) {
           answer = "Signal lost. Try again.";
           status = "error";

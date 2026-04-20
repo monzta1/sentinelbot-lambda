@@ -6,6 +6,11 @@ Versioning note:
 - Minor bumps track visible capability additions or new behavioral layers
 - Major bumps track architecture or deployment model changes
 
+## v1.4.32 - April 2026
+- Added a hard normalized cache for common identity, song, and FAQ questions
+- Shortened song-context prompts and lowered Anthropic token caps for fallback answers
+- Added structured Anthropic call logging with intent and size metrics
+
 ## v1.4.31 - April 2026
 - Corrected the canonical Shieldbearer founding answer to April 20, 2025
 - Added nearby founding and launch phrasings so the same date stays consistent across Q&A variants
