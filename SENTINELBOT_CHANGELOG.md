@@ -199,3 +199,8 @@ Versioning note:
 - Added deterministic lyrics storage fields for manual, YouTube, and generated sources
 - Extracted lyric-shaped blocks from YouTube descriptions during ingestion and backfill
 - Switched lyrics retrieval to use stored lyrics before any Anthropic fallback
+
+## v1.4.28 - April 2026
+- Cached Anthropic-generated lyrics back into the Songs table as `generated`
+- Preserved manual and YouTube-derived lyrics as higher-priority sources
+- Kept future lyrics lookups deterministic once a source has been stored

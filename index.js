@@ -643,7 +643,8 @@ async function resolveSongLyricsLookup(question, history = []) {
     answer = await callAnthropic(retryQuestion, history, extraContext, { maxTokens: 1600 });
   }
 
-  if (isIncompleteLyricsAnswer(answer)) {
+  const sanitizedAnswer = sanitizeLyricsResponse(answer);
+  if (isIncompleteLyricsAnswer(sanitizedAnswer)) {
     return {
       answer: "Lyrics unavailable right now.",
       responseMode: "lyrics",
@@ -657,10 +658,12 @@ async function resolveSongLyricsLookup(question, history = []) {
     };
   }
 
+  await persistGeneratedLyricsToSongsTable(song, sanitizedAnswer);
+
   return {
-    answer,
+    answer: sanitizedAnswer,
     responseMode: "lyrics",
-    lookupMode: "song-lyrics-anthropic",
+    lookupMode: "song-lyrics-generated",
     fallbackReason: null,
     songsTableAvailable: songsTableAvailable === true,
     songId: String(song.songId || song.id || "").trim(),
@@ -2031,6 +2034,58 @@ function sanitizeMeaningResponse(answer) {
     .filter(Boolean)
     .slice(0, 5)
     .join("\n");
+}
+
+function sanitizeLyricsResponse(answer) {
+  const text = String(answer || "")
+    .replace(/<a\b[^>]*>(.*?)<\/a>/gi, "$1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+
+  if (!text) return "";
+
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/(spotify|youtube|listen on|watch on|dossier|link)/i.test(line));
+
+  return normalizeLyricsBlock(lines.join("\n"));
+}
+
+async function persistGeneratedLyricsToSongsTable(song, lyrics) {
+  const songId = String(song?.songId || song?.id || "").trim();
+  const normalizedLyrics = normalizeLyricsBlock(lyrics);
+  if (!songId || !normalizedLyrics) return false;
+
+  try {
+    await dynamo.send(new UpdateCommand({
+      TableName: SONGS_TABLE_NAME,
+      Key: {
+        songId
+      },
+      UpdateExpression: "SET #lyrics = :lyrics, lyricsSource = :source, lyricsConfidence = :confidence, updatedAt = :updatedAt",
+      ConditionExpression: "attribute_not_exists(#lyrics) OR #lyrics = :empty",
+      ExpressionAttributeNames: {
+        "#lyrics": "lyrics"
+      },
+      ExpressionAttributeValues: {
+        ":lyrics": normalizedLyrics,
+        ":source": "generated",
+        ":confidence": "low",
+        ":updatedAt": nowIso(),
+        ":empty": ""
+      }
+    }));
+    return true;
+  } catch (error) {
+    if (error?.name === "ConditionalCheckFailedException") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function callAnthropic(question, history, extraContext = null, options = {}) {
