@@ -1,0 +1,6 @@
+#title
+Valid Song With Artwork
+
+#lyrics
+Line 1
+Line 2
