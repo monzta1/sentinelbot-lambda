@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.40 - April 2026
+- Added deterministic content hashing and read-before-write idempotency to Shield Ingest CLI
+- Made EventStream emission conditional on new or meaningfully changed content
+
 ## v1.4.39 - April 2026
 - Added an end-to-end Shield Ingest CLI test suite with real sample files and artwork coverage
 - Added a package test script so `npm run test` runs the Shield Ingest CLI harness

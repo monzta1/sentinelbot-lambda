@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 const fs = require("fs");
+const crypto = require("crypto");
 const path = require("path");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, GetCommand, PutCommand } = require("@aws-sdk/lib-dynamodb");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
@@ -89,13 +90,30 @@ function findArtwork(filePath, slug) {
   return null;
 }
 
+function normalizeContentField(value) {
+  if (value == null) return null;
+  return String(value);
+}
+
+function buildContentHash(song) {
+  const payload = {
+    title: normalizeContentField(song.title),
+    songmeaning: normalizeContentField(song.songmeaning),
+    lyrics: normalizeContentField(song.lyrics),
+    artwork: normalizeContentField(song.artwork)
+  };
+
+  return crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
 function validateSong(parsed) {
   const song = {
     title: parsed && parsed.title != null ? String(parsed.title) : null,
     songmeaning: parsed && parsed.songmeaning != null ? String(parsed.songmeaning) : null,
     lyrics: parsed && parsed.lyrics != null ? String(parsed.lyrics) : null,
     slug: parsed && parsed.slug != null ? String(parsed.slug) : null,
-    artwork: parsed && parsed.artwork != null ? String(parsed.artwork) : null
+    artwork: parsed && parsed.artwork != null ? String(parsed.artwork) : null,
+    contentHash: parsed && parsed.contentHash != null ? String(parsed.contentHash) : null
   };
 
   if (!song.title) {
@@ -126,10 +144,11 @@ function validateSong(parsed) {
 function buildCliEventStreamItem(song) {
   const timestamp = new Date().toISOString();
   return {
-    id: `${EVENT_STREAM_PK}#CLI_INGEST#${song.slug}`,
+    id: `${EVENT_STREAM_PK}#CLI_INGEST#${song.slug}#${song.contentHash}`,
     pk: EVENT_STREAM_PK,
-    sk: `CLI_INGEST#${song.slug}`,
+    sk: `CLI_INGEST#${song.slug}#${song.contentHash}`,
     eventType: "CLI_INGEST",
+    changeType: song.changeType || "create",
     songId: song.slug,
     title: song.title,
     timestamp,
@@ -152,7 +171,8 @@ function buildProcessedResult(song, writtenToDynamo, eventLogged) {
     triggerMatched: true,
     writtenToDynamo,
     eventLogged,
-    artworkAttached: Boolean(song.artwork)
+    artworkAttached: Boolean(song.artwork),
+    contentHash: song.contentHash || null
   };
 }
 
@@ -161,7 +181,8 @@ function buildSkippedResult(song) {
     status: "skipped",
     songId: song.slug,
     triggerMatched: false,
-    reason: "missing lyrics or meaning or artwork"
+    reason: "missing lyrics or meaning or artwork",
+    contentHash: song.contentHash || null
   };
 }
 
@@ -169,7 +190,8 @@ function buildRejectedResult() {
   return {
     status: "rejected",
     reason: "missing title or invalid file",
-    songId: null
+    songId: null,
+    contentHash: null
   };
 }
 
@@ -177,7 +199,8 @@ function buildErrorResult(reason, songId) {
   return {
     status: "error",
     reason,
-    songId: songId || null
+    songId: songId || null,
+    contentHash: null
   };
 }
 
@@ -188,10 +211,17 @@ async function main() {
     const parsed = parseFile(rawContent);
     const slug = slugifyTitle(parsed.title);
     const artwork = findArtwork(filePath, slug);
+    const contentHash = buildContentHash({
+      title: parsed.title,
+      songmeaning: parsed.songmeaning,
+      lyrics: parsed.lyrics,
+      artwork
+    });
     const enrichedSong = {
       ...parsed,
       slug,
-      artwork
+      artwork,
+      contentHash
     };
     const result = validateSong(enrichedSong);
 
@@ -207,21 +237,42 @@ async function main() {
       return buildProcessedResult(result.song, false, false);
     }
 
+    let existingSong = null;
+    try {
+      const existing = await dynamo.send(new GetCommand({
+        TableName: SONGS_TABLE_NAME,
+        Key: { songId: result.song.slug }
+      }));
+      existingSong = existing?.Item || null;
+    } catch (error) {
+      return buildErrorResult("dynamodb_write_failed", result.song.slug);
+    }
+
+    const existingHash = existingSong?.contentHash ? String(existingSong.contentHash) : null;
+    if (existingHash === result.song.contentHash) {
+      return buildProcessedResult(result.song, false, false);
+    }
+
+    const changeType = existingSong ? "update" : "create";
+    const nextSongItem = {
+      songId: result.song.slug,
+      title: result.song.title,
+      normalizedTitle: result.song.slug,
+      songMeaning: result.song.songmeaning,
+      lyrics: result.song.lyrics,
+      artwork: result.song.artwork,
+      contentHash: result.song.contentHash,
+      status: "coming_soon",
+      releaseDetected: false,
+      source: "cli",
+      createdAt: existingSong?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
     try {
       await dynamo.send(new PutCommand({
         TableName: SONGS_TABLE_NAME,
-        Item: {
-          songId: result.song.slug,
-          title: result.song.title,
-          normalizedTitle: result.song.slug,
-          songMeaning: result.song.songmeaning,
-          lyrics: result.song.lyrics,
-          artwork: result.song.artwork,
-          status: "coming_soon",
-          releaseDetected: false,
-          source: "cli",
-          createdAt: new Date().toISOString()
-        }
+        Item: nextSongItem
       }));
     } catch (error) {
       return buildErrorResult("dynamodb_write_failed", result.song.slug);
@@ -229,9 +280,13 @@ async function main() {
 
     let eventLogged = true;
     try {
+      const eventSong = {
+        ...result.song,
+        changeType
+      };
       await dynamo.send(new PutCommand({
         TableName: DYNAMO_TABLE_NAME,
-        Item: buildCliEventStreamItem(result.song),
+        Item: buildCliEventStreamItem(eventSong),
         ConditionExpression: "attribute_not_exists(id)"
       }));
     } catch (error) {
