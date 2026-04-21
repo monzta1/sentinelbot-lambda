@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.44 - April 2026
+- Added replay controls to the Signal Room frontend for event-stream playback and pause/reset behavior
+- Kept replay mode fully client-side and driven only by the current `site.json` snapshot
+
 ## v1.4.43 - April 2026
 - Added transition animations to the Signal Room frontend for state changes between draft, incoming, and released columns
 - Kept the 60-second refresh loop stable while limiting animation spam to actual state changes

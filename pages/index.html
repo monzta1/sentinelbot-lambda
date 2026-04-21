@@ -111,6 +111,47 @@
       color: var(--muted);
       font-size: .9rem;
     }
+    .signal-room__controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .signal-room__controls button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 9px 14px;
+      font-size: .8rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .signal-room__controls button[data-active="true"] {
+      border-color: rgba(231,76,60,.38);
+      background: rgba(231,76,60,.12);
+    }
+    .signal-room__controls label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: .82rem;
+      font-family: var(--mono);
+    }
+    .signal-room__controls input {
+      width: 92px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(0,0,0,.22);
+      color: var(--text);
+      padding: 8px 10px;
+      font-family: var(--mono);
+      font-size: .82rem;
+    }
     .signal-room__grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -140,6 +181,8 @@
       gap: 10px;
     }
     .song-row {
+      position: relative;
+      overflow: hidden;
       border: 1px solid rgba(255,255,255,.08);
       border-radius: 14px;
       padding: 12px;
@@ -303,6 +346,14 @@
           <h2>Signal Room</h2>
           <p>Event-driven grouping from <code>eventsStream</code> with SongsTable fallback.</p>
         </div>
+        <div class="signal-room__controls">
+          <button type="button" id="playReplayBtn">Play Replay</button>
+          <button type="button" id="pauseReplayBtn">Pause</button>
+          <button type="button" id="resetReplayBtn">Reset</button>
+          <label for="replaySpeedMs">Speed
+            <input id="replaySpeedMs" type="number" min="100" step="100" value="500" aria-label="Replay speed in milliseconds">
+          </label>
+        </div>
         <div class="signal-room__grid">
           <section class="signal-room__lane">
             <h3>In the Signal <span class="signal-room__count" id="signalCount">0</span></h3>
@@ -331,6 +382,15 @@
 
   <script>
     let previousStateBySongId = {};
+    let replayMode = false;
+    let replayPaused = false;
+    let replayRunId = 0;
+    let livePollTimer = null;
+    let currentSite = null;
+    let currentStateSnapshot = {};
+    let baselineStateSnapshot = {};
+    let replayEvents = [];
+    let replayIndex = 0;
 
     const state = {
       releaseId: document.getElementById("releaseId"),
@@ -343,6 +403,10 @@
       signalList: document.getElementById("signalList"),
       incomingList: document.getElementById("incomingList"),
       releasedList: document.getElementById("releasedList"),
+      playReplayBtn: document.getElementById("playReplayBtn"),
+      pauseReplayBtn: document.getElementById("pauseReplayBtn"),
+      resetReplayBtn: document.getElementById("resetReplayBtn"),
+      replaySpeedMs: document.getElementById("replaySpeedMs"),
       json: document.getElementById("json"),
       status: document.getElementById("status")
     };
@@ -374,8 +438,20 @@
       return combined;
     }
 
-    function buildStateMap(site) {
+    function buildFallbackStateMap(site) {
       const stateBySongId = {};
+      const songs = collectSongs(site);
+      for (const song of songs) {
+        const songId = String(song?.songId || song?.id || "").trim();
+        if (!songId) continue;
+        stateBySongId[songId] = normalizeState(song?.status || song?.state) || "draft";
+      }
+
+      return stateBySongId;
+    }
+
+    function buildEventStateMap(site) {
+      const stateBySongId = buildFallbackStateMap(site);
       const events = Array.isArray(site?.eventsStream) ? [...site.eventsStream] : [];
       events.sort((a, b) => {
         const aTime = Date.parse(a?.timestamp || "") || 0;
@@ -386,16 +462,7 @@
       for (const event of events) {
         const songId = String(event?.songId || "").trim();
         if (!songId) continue;
-        stateBySongId[songId] = normalizeState(event?.stateAfter) || "draft";
-      }
-
-      const songs = collectSongs(site);
-      for (const song of songs) {
-        const songId = String(song?.songId || song?.id || "").trim();
-        if (!songId) continue;
-        if (!stateBySongId[songId]) {
-          stateBySongId[songId] = normalizeState(song?.status || song?.state) || "draft";
-        }
+        stateBySongId[songId] = normalizeState(event?.stateAfter) || stateBySongId[songId] || "draft";
       }
 
       return stateBySongId;
@@ -403,16 +470,6 @@
 
     function songIdOf(song) {
       return String(song?.songId || song?.id || "").trim();
-    }
-
-    function stateTransitionClass(previousState, currentState) {
-      if (!previousState || !currentState || previousState === currentState) {
-        return "";
-      }
-      if (previousState === "draft" && currentState === "coming_soon") return "move-to-incoming";
-      if (previousState === "coming_soon" && currentState === "released") return "move-to-released";
-      if (previousState === "draft" && currentState === "released") return "skip-to-released";
-      return "";
     }
 
     function renderSongRow(song, stateName, hotSongId, transitionClass) {
@@ -446,13 +503,50 @@
       return row;
     }
 
-    function renderSignalRoom(site) {
+    function updateControlState() {
+      state.playReplayBtn.dataset.active = String(replayMode && !replayPaused);
+      state.pauseReplayBtn.dataset.active = String(replayMode && replayPaused);
+      state.resetReplayBtn.dataset.active = String(!replayMode);
+    }
+
+    function getReplaySpeedMs() {
+      const parsed = Number.parseInt(state.replaySpeedMs.value, 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 500;
+    }
+
+    function clearLivePolling() {
+      if (livePollTimer) {
+        clearInterval(livePollTimer);
+        livePollTimer = null;
+      }
+    }
+
+    function startLivePolling() {
+      clearLivePolling();
+      if (replayMode) return;
+      livePollTimer = setInterval(() => {
+        loadSite({ preserveReplay: false, fromPoll: true });
+      }, 60000);
+    }
+
+    function applyTransitionClass(previousState, currentState) {
+      if (!previousState || !currentState || previousState === currentState) {
+        return "";
+      }
+      if (previousState === "draft" && currentState === "coming_soon") return "move-to-incoming";
+      if (previousState === "coming_soon" && currentState === "released") return "move-to-released";
+      if (previousState === "draft" && currentState === "released") return "skip-to-released";
+      return "";
+    }
+
+    function renderSignalRoom(site, options = {}) {
+      const stateMap = options.stateMap || buildEventStateMap(site);
+      const previousMap = options.previousMap || previousStateBySongId;
       const songs = collectSongs(site);
-      const stateBySongId = buildStateMap(site);
-      const currentStateBySongId = { ...stateBySongId };
-      const latestEvent = Array.isArray(site?.eventsStream) && site.eventsStream.length
+      const currentStateBySongId = { ...stateMap };
+      const latestEvent = options.latestEvent || (Array.isArray(site?.eventsStream) && site.eventsStream.length
         ? [...site.eventsStream].sort((a, b) => (Date.parse(a?.timestamp || "") || 0) - (Date.parse(b?.timestamp || "") || 0)).slice(-1)[0]
-        : null;
+        : null);
       const hotSongId = String(latestEvent?.songId || "").trim();
 
       const groups = {
@@ -464,7 +558,7 @@
       for (const song of songs) {
         const songId = songIdOf(song);
         if (!songId) continue;
-        const stateName = stateBySongId[songId] || "draft";
+        const stateName = stateMap[songId] || "draft";
         if (!groups[stateName]) {
           groups.draft.push(song);
           continue;
@@ -491,7 +585,7 @@
         }
         for (const song of rows) {
           const songId = songIdOf(song);
-          const transitionClass = stateTransitionClass(previousStateBySongId[songId], currentStateBySongId[songId]);
+          const transitionClass = applyTransitionClass(previousMap[songId], currentStateBySongId[songId]);
           listNode.appendChild(renderSongRow(song, stateName, hotSongId, transitionClass));
         }
       }
@@ -499,21 +593,103 @@
       previousStateBySongId = currentStateBySongId;
     }
 
-    async function loadSite() {
+    async function runReplay({ restart = false } = {}) {
+      if (!currentSite) {
+        return;
+      }
+
+      if (restart || !replayMode) {
+        replayMode = true;
+        replayPaused = false;
+        clearLivePolling();
+        replayEvents = [...(currentSite?.eventsStream || [])].sort((a, b) => {
+          const aTime = Date.parse(a?.timestamp || "") || 0;
+          const bTime = Date.parse(b?.timestamp || "") || 0;
+          return aTime - bTime;
+        });
+        replayIndex = 0;
+        currentStateSnapshot = { ...baselineStateSnapshot };
+        previousStateBySongId = { ...baselineStateSnapshot };
+        renderSignalRoom(currentSite, {
+          stateMap: currentStateSnapshot,
+          previousMap: baselineStateSnapshot,
+          latestEvent: null
+        });
+      }
+
+      const localRunId = ++replayRunId;
+      replayMode = true;
+      replayPaused = false;
+      updateControlState();
+
+      while (replayMode && !replayPaused && localRunId === replayRunId && replayIndex < replayEvents.length) {
+        const event = replayEvents[replayIndex];
+        const songId = String(event?.songId || "").trim();
+        if (songId) {
+          const nextState = normalizeState(event?.stateAfter) || currentStateSnapshot[songId] || "draft";
+          const nextSnapshot = { ...currentStateSnapshot, [songId]: nextState };
+          const previousSnapshot = currentStateSnapshot;
+          currentStateSnapshot = nextSnapshot;
+          renderSignalRoom(currentSite, {
+            stateMap: nextSnapshot,
+            previousMap: previousSnapshot,
+            latestEvent: event
+          });
+        }
+        replayIndex += 1;
+        if (replayPaused || !replayMode || localRunId !== replayRunId) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, getReplaySpeedMs()));
+      }
+    }
+
+    function stopReplay({ resumeLive = true } = {}) {
+      replayRunId += 1;
+      replayMode = false;
+      replayPaused = false;
+      replayEvents = [];
+      replayIndex = 0;
+      currentStateSnapshot = { ...baselineStateSnapshot };
+      previousStateBySongId = { ...baselineStateSnapshot };
+      updateControlState();
+      if (resumeLive) {
+        startLivePolling();
+      }
+    }
+
+    async function loadSite({ preserveReplay = false, fromPoll = false } = {}) {
       try {
         const res = await fetch("./site.json", { cache: "no-store" });
         if (!res.ok) throw new Error("site.json fetch failed with HTTP " + res.status);
         const site = await res.json();
+        currentSite = site;
         const banner = site?.homepage?.banner || {};
         const release = site?.release || {};
+        baselineStateSnapshot = buildFallbackStateMap(site);
+        if (!replayMode) {
+          currentStateSnapshot = buildEventStateMap(site);
+        }
 
         state.releaseId.textContent = formatValue(banner.activeReleaseId || release.id);
         state.bannerTitle.textContent = formatValue(banner.title);
         state.sourceUrl.textContent = formatValue(banner.sourceUrl);
         state.lastUpdatedAt.textContent = formatValue(site?.homepage?.lastUpdatedAt || site?.generatedAt);
-        renderSignalRoom(site);
+        if (!replayMode) {
+          renderSignalRoom(site, {
+            stateMap: currentStateSnapshot,
+            previousMap: previousStateBySongId
+          });
+          previousStateBySongId = { ...currentStateSnapshot };
+        } else if (!preserveReplay && !fromPoll) {
+          renderSignalRoom(site, {
+            stateMap: currentStateSnapshot,
+            previousMap: previousStateBySongId
+          });
+        }
         state.json.textContent = JSON.stringify(site, null, 2);
         setStatus("site.json loaded successfully.");
+        updateControlState();
       } catch (error) {
         setStatus(error.message);
         state.json.textContent = JSON.stringify({
@@ -530,8 +706,29 @@
       }
     }
 
+    state.playReplayBtn.addEventListener("click", async () => {
+      if (!currentSite) return;
+      if (replayMode && replayPaused) {
+        replayPaused = false;
+        await runReplay({ restart: false });
+        return;
+      }
+      await runReplay({ restart: true });
+    });
+
+    state.pauseReplayBtn.addEventListener("click", () => {
+      if (!replayMode) return;
+      replayPaused = true;
+      updateControlState();
+    });
+
+    state.resetReplayBtn.addEventListener("click", async () => {
+      stopReplay({ resumeLive: true });
+      await loadSite({ preserveReplay: false, fromPoll: false });
+    });
+
     loadSite();
-    setInterval(loadSite, 60000);
+    startLivePolling();
   </script>
 </body>
 </html>
