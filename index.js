@@ -8,7 +8,22 @@ const SITE_JSON_PATH = path.join(__dirname, "docs", "site.json");
 const SONG_INDEX_PATH = path.join(__dirname, "docs", "song-index.json");
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const SONGS_TABLE_TITLE_INDEX = process.env.SONGS_TABLE_TITLE_INDEX || "normalizedTitle-index";
-const SENTINELBOT_VERSION = process.env.SENTINELBOT_VERSION || "1.0";
+function loadSentinelbotVersion() {
+  const envVersion = String(process.env.SENTINELBOT_VERSION || "").trim();
+  if (envVersion) return envVersion;
+
+  try {
+    const changelog = fs.readFileSync(path.join(__dirname, "SENTINELBOT_CHANGELOG.md"), "utf8");
+    const match = changelog.match(/^##\s+v([0-9]+(?:\.[0-9]+){1,2})\b/m);
+    if (match) return match[1];
+  } catch (error) {
+    // Fall through to the legacy default if the changelog cannot be read.
+  }
+
+  return "1.0";
+}
+
+const SENTINELBOT_VERSION = loadSentinelbotVersion();
 const SENTINELBOT_VERSION_TAG = `v${SENTINELBOT_VERSION}`;
 const STAGING_PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;
 const PRODUCTION_PROMPT_CACHE_TTL_MS = 5 * 60 * 1000;

@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.35 - April 2026
+- Made the runtime version answer derive from the changelog top entry when `SENTINELBOT_VERSION` is not set
+- Kept environment overrides available for staged or pinned deployments
+
 ## v1.4.34 - April 2026
 - Added trace IDs to the generated `site.json` artifact for GitHub Pages
 - Carried release trace metadata into the archive payload and release index
@@ -233,4 +237,3 @@ Versioning note:
 - Core knowledge base added for music, theology, band history, gear, and site navigation
 - App-side caching started for common questions
 - DynamoDB logging enabled
-
