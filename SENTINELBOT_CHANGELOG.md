@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.36 - April 2026
+- Added Shield Ingest CLI DynamoDB upsert support for processed songs
+- Kept skipped and rejected inputs read-only while preserving JSON-only CLI output
+
 ## v1.4.35 - April 2026
 - Made the runtime version answer derive from the changelog top entry when `SENTINELBOT_VERSION` is not set
 - Kept environment overrides available for staged or pinned deployments
