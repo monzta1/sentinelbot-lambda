@@ -149,6 +149,39 @@
       border-color: rgba(231,76,60,.34);
       box-shadow: 0 0 0 1px rgba(231,76,60,.12), 0 0 18px rgba(231,76,60,.12);
     }
+    .song-row.move-to-incoming {
+      animation: moveToIncoming 1.1s ease-out both;
+    }
+    .song-row.move-to-incoming::after {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 14px;
+      pointer-events: none;
+      animation: incomingPulse 1.1s ease-out both;
+    }
+    .song-row.move-to-released {
+      animation: moveToReleased 1.1s ease-out both;
+    }
+    .song-row.move-to-released::after {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 14px;
+      pointer-events: none;
+      animation: releasedGlow 1.1s ease-out both;
+    }
+    .song-row.skip-to-released {
+      animation: skipToReleased .8s ease-out both;
+    }
+    .song-row.skip-to-released::after {
+      content: "";
+      position: absolute;
+      inset: -2px;
+      border-radius: 14px;
+      pointer-events: none;
+      animation: skipStreak .8s ease-out both;
+    }
     .song-row__title {
       margin: 0;
       font-size: .98rem;
@@ -196,6 +229,36 @@
       margin-top: 24px;
       color: var(--muted);
       font-size: .88rem;
+    }
+    @keyframes moveToIncoming {
+      0% { opacity: 0; transform: translateY(16px) scale(.98); box-shadow: 0 0 0 rgba(231,76,60,0); }
+      45% { opacity: 1; transform: translateY(-3px) scale(1.015); box-shadow: 0 0 26px rgba(231,76,60,.18); }
+      100% { opacity: 1; transform: translateY(0) scale(1); box-shadow: none; }
+    }
+    @keyframes incomingPulse {
+      0% { box-shadow: 0 0 0 0 rgba(231,76,60,.0), inset 0 0 0 0 rgba(231,76,60,.0); }
+      35% { box-shadow: 0 0 0 10px rgba(231,76,60,.18), inset 0 0 0 1px rgba(231,76,60,.26); }
+      100% { box-shadow: 0 0 0 0 rgba(231,76,60,0), inset 0 0 0 0 rgba(231,76,60,0); }
+    }
+    @keyframes moveToReleased {
+      0% { opacity: 0; transform: translateY(10px) scale(.96); }
+      35% { opacity: 1; transform: translateY(-2px) scale(1.035); box-shadow: 0 0 30px rgba(90,220,120,.24); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes releasedGlow {
+      0% { box-shadow: 0 0 0 0 rgba(90,220,120,.0), inset 0 0 0 0 rgba(90,220,120,.0); }
+      45% { box-shadow: 0 0 0 12px rgba(90,220,120,.18), inset 0 0 0 1px rgba(90,220,120,.24); }
+      100% { box-shadow: 0 0 0 0 rgba(90,220,120,0), inset 0 0 0 0 rgba(90,220,120,0); }
+    }
+    @keyframes skipToReleased {
+      0% { opacity: 0; transform: translateX(-12px) scale(.96); }
+      35% { opacity: 1; transform: translateX(0) scale(1.04); box-shadow: 0 0 0 1px rgba(90,220,120,.18), 0 0 22px rgba(90,220,120,.18); }
+      100% { opacity: 1; transform: translateX(0) scale(1); }
+    }
+    @keyframes skipStreak {
+      0% { opacity: 0; transform: translateX(-18px); box-shadow: 0 0 0 rgba(90,220,120,0); }
+      35% { opacity: 1; transform: translateX(0); box-shadow: 0 0 28px rgba(90,220,120,.24); }
+      100% { opacity: 0; transform: translateX(18px); box-shadow: 0 0 0 rgba(90,220,120,0); }
     }
     @media (max-width: 760px) {
       .wrap { padding-inline: 14px; }
@@ -267,6 +330,8 @@
   </main>
 
   <script>
+    let previousStateBySongId = {};
+
     const state = {
       releaseId: document.getElementById("releaseId"),
       bannerTitle: document.getElementById("bannerTitle"),
@@ -340,11 +405,27 @@
       return String(song?.songId || song?.id || "").trim();
     }
 
-    function renderSongRow(song, stateName, hotSongId) {
+    function stateTransitionClass(previousState, currentState) {
+      if (!previousState || !currentState || previousState === currentState) {
+        return "";
+      }
+      if (previousState === "draft" && currentState === "coming_soon") return "move-to-incoming";
+      if (previousState === "coming_soon" && currentState === "released") return "move-to-released";
+      if (previousState === "draft" && currentState === "released") return "skip-to-released";
+      return "";
+    }
+
+    function renderSongRow(song, stateName, hotSongId, transitionClass) {
       const row = document.createElement("article");
       row.className = "song-row";
       if (songIdOf(song) && songIdOf(song) === hotSongId) {
         row.classList.add("song-row--hot");
+      }
+      if (transitionClass) {
+        row.classList.add(transitionClass);
+        setTimeout(() => {
+          row.classList.remove(transitionClass);
+        }, 1200);
       }
 
       const title = document.createElement("h4");
@@ -368,6 +449,7 @@
     function renderSignalRoom(site) {
       const songs = collectSongs(site);
       const stateBySongId = buildStateMap(site);
+      const currentStateBySongId = { ...stateBySongId };
       const latestEvent = Array.isArray(site?.eventsStream) && site.eventsStream.length
         ? [...site.eventsStream].sort((a, b) => (Date.parse(a?.timestamp || "") || 0) - (Date.parse(b?.timestamp || "") || 0)).slice(-1)[0]
         : null;
@@ -408,9 +490,13 @@
           continue;
         }
         for (const song of rows) {
-          listNode.appendChild(renderSongRow(song, stateName, hotSongId));
+          const songId = songIdOf(song);
+          const transitionClass = stateTransitionClass(previousStateBySongId[songId], currentStateBySongId[songId]);
+          listNode.appendChild(renderSongRow(song, stateName, hotSongId, transitionClass));
         }
       }
+
+      previousStateBySongId = currentStateBySongId;
     }
 
     async function loadSite() {
@@ -445,6 +531,7 @@
     }
 
     loadSite();
+    setInterval(loadSite, 60000);
   </script>
 </body>
 </html>

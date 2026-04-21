@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.43 - April 2026
+- Added transition animations to the Signal Room frontend for state changes between draft, incoming, and released columns
+- Kept the 60-second refresh loop stable while limiting animation spam to actual state changes
+
 ## v1.4.42 - April 2026
 - Updated the Signal Room frontend to derive song columns from `eventsStream` with SongsTable fallback
 - Kept the live event feed available for UI transition highlighting
