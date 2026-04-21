@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.38 - April 2026
+- Standardized Shield Ingest CLI output into one consistent JSON contract for processed, skipped, rejected, and error results
+- Kept internal validation, artwork lookup, DynamoDB writes, and event logging silent except for the final JSON response
+
 ## v1.4.37 - April 2026
 - Added fire-and-forget EventStream logging after Shield Ingest CLI upserts a processed song
 - Kept EventStream failures non-blocking so CLI ingestion still returns success JSON

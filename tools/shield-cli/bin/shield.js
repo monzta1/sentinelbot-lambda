@@ -107,7 +107,7 @@ function validateSong(parsed) {
     };
   }
 
-  if (song.lyrics || song.songmeaning) {
+  if (song.lyrics || song.songmeaning || song.artwork) {
     return {
       status: "processed",
       triggerMatched: true,
@@ -145,67 +145,110 @@ if (!fileArg) {
   process.exit(0);
 }
 
-const filePath = path.resolve(process.cwd(), fileArg);
-const rawContent = fs.readFileSync(filePath, "utf8");
-const parsed = parseFile(rawContent);
-const slug = slugifyTitle(parsed.title);
-const artwork = findArtwork(filePath, slug);
-const enrichedSong = {
-  ...parsed,
-  slug,
-  artwork
-};
-const result = validateSong(enrichedSong);
-
-async function upsertSong(songResult) {
-  if (songResult.status !== "processed" || isDryRun) {
-    return songResult;
-  }
-
-  const song = songResult.song;
-  try {
-    await dynamo.send(new PutCommand({
-      TableName: SONGS_TABLE_NAME,
-      Item: {
-        songId: song.slug,
-        title: song.title,
-        normalizedTitle: song.slug,
-        songMeaning: song.songmeaning,
-        lyrics: song.lyrics,
-        artwork: song.artwork,
-        status: "coming_soon",
-        releaseDetected: false,
-        source: "cli",
-        createdAt: new Date().toISOString()
-      }
-    }));
-  } catch (error) {
-    return {
-      status: "error",
-      reason: "dynamodb_write_failed"
-    };
-  }
-
-  try {
-    await dynamo.send(new PutCommand({
-      TableName: DYNAMO_TABLE_NAME,
-      Item: buildCliEventStreamItem(song),
-      ConditionExpression: "attribute_not_exists(id)"
-    }));
-  } catch (error) {
-    console.error(JSON.stringify({
-      status: "warning",
-      reason: "eventstream_write_failed",
-      songId: song.slug
-    }));
-  }
-
-  return songResult;
+function buildProcessedResult(song, writtenToDynamo, eventLogged) {
+  return {
+    status: "processed",
+    songId: song.slug,
+    triggerMatched: true,
+    writtenToDynamo,
+    eventLogged,
+    artworkAttached: Boolean(song.artwork)
+  };
 }
 
-(async () => {
-  const finalResult = await upsertSong(result);
-  process.stdout.write(`${JSON.stringify(finalResult, null, 2)}\n`);
-})().catch(() => {
-  process.stdout.write(`${JSON.stringify({ status: "error", reason: "dynamodb_write_failed" }, null, 2)}\n`);
-});
+function buildSkippedResult(song) {
+  return {
+    status: "skipped",
+    songId: song.slug,
+    triggerMatched: false,
+    reason: "missing lyrics or meaning or artwork"
+  };
+}
+
+function buildRejectedResult() {
+  return {
+    status: "rejected",
+    reason: "missing title or invalid file",
+    songId: null
+  };
+}
+
+function buildErrorResult(reason, songId) {
+  return {
+    status: "error",
+    reason,
+    songId: songId || null
+  };
+}
+
+async function main() {
+  try {
+    const filePath = path.resolve(process.cwd(), fileArg);
+    const rawContent = fs.readFileSync(filePath, "utf8");
+    const parsed = parseFile(rawContent);
+    const slug = slugifyTitle(parsed.title);
+    const artwork = findArtwork(filePath, slug);
+    const enrichedSong = {
+      ...parsed,
+      slug,
+      artwork
+    };
+    const result = validateSong(enrichedSong);
+
+    if (result.status === "rejected") {
+      return buildRejectedResult();
+    }
+
+    if (result.status === "skipped") {
+      return buildSkippedResult(result.song);
+    }
+
+    if (isDryRun) {
+      return buildProcessedResult(result.song, false, false);
+    }
+
+    try {
+      await dynamo.send(new PutCommand({
+        TableName: SONGS_TABLE_NAME,
+        Item: {
+          songId: result.song.slug,
+          title: result.song.title,
+          normalizedTitle: result.song.slug,
+          songMeaning: result.song.songmeaning,
+          lyrics: result.song.lyrics,
+          artwork: result.song.artwork,
+          status: "coming_soon",
+          releaseDetected: false,
+          source: "cli",
+          createdAt: new Date().toISOString()
+        }
+      }));
+    } catch (error) {
+      return buildErrorResult("dynamodb_write_failed", result.song.slug);
+    }
+
+    let eventLogged = true;
+    try {
+      await dynamo.send(new PutCommand({
+        TableName: DYNAMO_TABLE_NAME,
+        Item: buildCliEventStreamItem(result.song),
+        ConditionExpression: "attribute_not_exists(id)"
+      }));
+    } catch (error) {
+      eventLogged = false;
+    }
+
+    return buildProcessedResult(result.song, true, eventLogged);
+  } catch (error) {
+    const reason = error && error.code === "ENOENT" ? "parsing_failed" : "unknown";
+    return buildErrorResult(reason, null);
+  }
+}
+
+main()
+  .then((output) => {
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+  })
+  .catch(() => {
+    process.stdout.write(`${JSON.stringify(buildErrorResult("unknown", null), null, 2)}\n`);
+  });
