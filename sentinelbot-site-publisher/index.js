@@ -241,7 +241,8 @@ function buildEmptySiteArtifact() {
     release: {
       id: "",
       source: "",
-      publishedAt: ""
+      publishedAt: "",
+      traceId: ""
     },
     releaseIndex: {}
   };
@@ -258,6 +259,7 @@ function normalizeReleaseEventItem(item) {
   const title = String(payload.title || "").trim();
   const publishedAt = String(payload.publishedAt || item?.publishedAt || item?.createdAt || "").trim();
   const sourceUrl = String(payload.sourceUrl || "").trim();
+  const traceId = String(payload.traceId || item?.traceId || item?.id || "").trim();
   const eventId = String(item?.id || "").trim();
 
   if (!releaseId && !eventId && !publishedAt && !source && !title) {
@@ -271,6 +273,7 @@ function normalizeReleaseEventItem(item) {
     title,
     publishedAt,
     sourceUrl,
+    traceId,
     createdAt: String(item?.createdAt || "").trim(),
     updatedAt: String(item?.updatedAt || "").trim(),
     payload
@@ -306,7 +309,8 @@ function buildSiteArtifactFromEvents(events) {
       id: event.releaseId || event.eventId || "",
       title: event.title || "",
       publishedAt: event.publishedAt || event.createdAt || "",
-      sourceUrl: event.sourceUrl || ""
+      sourceUrl: event.sourceUrl || "",
+      traceId: event.traceId || ""
     };
   }
 
@@ -317,6 +321,7 @@ function buildSiteArtifactFromEvents(events) {
   const title = latest.title || "";
   const sourceUrl = latest.sourceUrl || "";
   const publishedAt = latest.publishedAt || latest.createdAt || "";
+  const traceId = latest.traceId || latest.releaseId || latest.eventId || "";
 
   return {
     generatedAt,
@@ -333,7 +338,8 @@ function buildSiteArtifactFromEvents(events) {
     release: {
       id: releaseId,
       source,
-      publishedAt
+      publishedAt,
+      traceId
     },
     releaseIndex
   };
