@@ -1,10 +1,11 @@
 const crypto = require("crypto");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, QueryCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, QueryCommand, ScanCommand } = require("@aws-sdk/lib-dynamodb");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const DRY_RUN = String(process.env.DRY_RUN || "true").toLowerCase() !== "false";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
 const GITHUB_OWNER = process.env.GITHUB_OWNER || "";
@@ -14,6 +15,7 @@ const SITE_JSON_PATH = process.env.SITE_JSON_PATH || "site.json";
 const EVENT_STREAM_PK = "eventstream";
 const ALLOWED_SOURCES = parseAllowedSources(process.env.ALLOWED_SOURCES || "[\"youtube\"]");
 const EVENT_STREAM_PAGE_SIZE = Math.max(1, Number.parseInt(process.env.EVENT_STREAM_PAGE_SIZE || "100", 10) || 100);
+const SONGS_TABLE_PAGE_SIZE = Math.max(1, Number.parseInt(process.env.SONGS_TABLE_PAGE_SIZE || "100", 10) || 100);
 const GITHUB_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.GITHUB_MAX_ATTEMPTS || "5", 10) || 5);
 const GITHUB_BASE_DELAY_MS = Math.max(100, Number.parseInt(process.env.GITHUB_BASE_DELAY_MS || "500", 10) || 500);
 
@@ -59,6 +61,31 @@ function getArtifactReleaseId(siteArtifact) {
 
 function getArtifactSource(siteArtifact, event = {}) {
   return String(event.source || siteArtifact?.release?.source || "youtube").trim();
+}
+
+function normalizeStateName(value) {
+  const raw = String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "_");
+
+  if (!raw) {
+    return "";
+  }
+
+  if (raw === "signal") {
+    return "draft";
+  }
+
+  if (raw === "incoming" || raw === "comingsoon") {
+    return "coming_soon";
+  }
+
+  if (raw === "coming_soon" || raw === "draft" || raw === "released") {
+    return raw;
+  }
+
+  return "";
 }
 
 function isAllowedSource(source) {
@@ -244,84 +271,219 @@ function buildEmptySiteArtifact() {
       publishedAt: "",
       traceId: ""
     },
-    releaseIndex: {}
+    releaseIndex: {},
+    signal: [],
+    incoming: [],
+    released: [],
+    signalCount: 0,
+    comingSoonCount: 0,
+    releasedCount: 0,
+    eventsStream: []
   };
 }
 
 function normalizeReleaseEventItem(item) {
-  const payload = item?.payload || null;
-  if (!payload || typeof payload !== "object") {
+  if (!item || typeof item !== "object") {
     return null;
   }
 
-  const releaseId = String(payload.id || "").trim();
-  const source = String(payload.source || "").trim();
-  const title = String(payload.title || "").trim();
-  const publishedAt = String(payload.publishedAt || item?.publishedAt || item?.createdAt || "").trim();
-  const sourceUrl = String(payload.sourceUrl || "").trim();
-  const traceId = String(payload.traceId || item?.traceId || item?.id || "").trim();
-  const eventId = String(item?.id || "").trim();
+  const payload = item?.payload && typeof item.payload === "object" ? item.payload : null;
+  const eventType = String(item?.eventType || payload?.eventType || "").trim();
+  const songId = String(item?.songId || payload?.songId || payload?.id || item?.id || "").trim();
+  const title = String(item?.title || payload?.title || "").trim();
+  const timestamp = String(item?.timestamp || payload?.timestamp || payload?.publishedAt || item?.publishedAt || item?.createdAt || item?.updatedAt || "").trim();
+  const source = String(item?.source || payload?.source || "youtube").trim();
+  const sourceUrl = String(item?.sourceUrl || payload?.sourceUrl || "").trim();
+  const traceId = String(item?.traceId || payload?.traceId || item?.id || "").trim();
+  const explicitState = normalizeStateName(item?.stateAfter || payload?.stateAfter);
+  let stateAfter = explicitState;
 
-  if (!releaseId && !eventId && !publishedAt && !source && !title) {
-    return null;
+  if (!stateAfter) {
+    if (eventType === "CLI_INGEST") {
+      stateAfter = "coming_soon";
+    } else if (eventType === "new_content_detected" || source === "youtube") {
+      stateAfter = "released";
+    } else if (payload?.releaseDetected === true || payload?.status === "released") {
+      stateAfter = "released";
+    } else if (payload?.status) {
+      stateAfter = normalizeStateName(payload.status) || "draft";
+    } else {
+      stateAfter = "draft";
+    }
   }
 
   return {
-    eventId,
-    releaseId,
+    eventId: String(item?.id || "").trim(),
+    songId,
+    eventType,
     source,
     title,
-    publishedAt,
+    timestamp,
+    stateAfter,
     sourceUrl,
     traceId,
     createdAt: String(item?.createdAt || "").trim(),
     updatedAt: String(item?.updatedAt || "").trim(),
+    publishedAt: timestamp,
     payload
   };
 }
 
 function compareReleaseEventsDesc(a, b) {
-  const aTime = parseTimestamp(a.publishedAt || a.createdAt || a.updatedAt);
-  const bTime = parseTimestamp(b.publishedAt || b.createdAt || b.updatedAt);
+  const aTime = parseTimestamp(a.timestamp || a.publishedAt || a.createdAt || a.updatedAt);
+  const bTime = parseTimestamp(b.timestamp || b.publishedAt || b.createdAt || b.updatedAt);
   if (aTime !== bTime) {
     return bTime - aTime;
   }
 
-  const aId = String(a.releaseId || a.eventId || "");
-  const bId = String(b.releaseId || b.eventId || "");
+  const aId = String(a.songId || a.eventId || "");
+  const bId = String(b.songId || b.eventId || "");
   return aId.localeCompare(bId);
 }
 
-function buildSiteArtifactFromEvents(events) {
-  const ordered = Array.isArray(events) ? [...events].filter(Boolean).sort(compareReleaseEventsDesc) : [];
-  if (ordered.length === 0) {
+function normalizeSongTableItem(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const songId = String(item.songId || item.id || item.pk || "").trim();
+  if (!songId) {
+    return null;
+  }
+
+  const status = normalizeStateName(item.status) || (item.releaseDetected ? "released" : "draft");
+
+  return {
+    songId,
+    title: String(item.title || "").trim(),
+    state: status || "draft",
+    traceId: String(item.traceId || "").trim(),
+    publishedAt: String(item.publishedAt || "").trim(),
+    sourceUrl: String(item.youtubeUrl || item.sourceUrl || "").trim(),
+    artwork: String(item.artwork || "").trim(),
+    updatedAt: String(item.updatedAt || item.createdAt || item.publishedAt || "").trim(),
+    contentHash: String(item.contentHash || "").trim(),
+    releaseDetected: Boolean(item.releaseDetected),
+    status: String(item.status || "").trim()
+  };
+}
+
+function compareSongsDesc(a, b) {
+  const aTime = parseTimestamp(a.publishedAt || a.updatedAt);
+  const bTime = parseTimestamp(b.publishedAt || b.updatedAt);
+  if (aTime !== bTime) {
+    return bTime - aTime;
+  }
+
+  return String(a.songId || "").localeCompare(String(b.songId || ""));
+}
+
+function compareReleaseSongsDesc(a, b) {
+  const aTime = parseTimestamp(a.publishedAt || a.updatedAt);
+  const bTime = parseTimestamp(b.publishedAt || b.updatedAt);
+  if (aTime !== bTime) {
+    return bTime - aTime;
+  }
+
+  return String(a.songId || "").localeCompare(String(b.songId || ""));
+}
+
+function buildSongView(song, latestEvent = null) {
+  const state = normalizeStateName(latestEvent?.stateAfter || song?.state) || "draft";
+  return {
+    songId: song.songId || latestEvent?.songId || "",
+    title: song.title || latestEvent?.title || "",
+    state,
+    traceId: latestEvent?.traceId || song.traceId || "",
+    publishedAt: latestEvent?.timestamp || song.publishedAt || "",
+    sourceUrl: latestEvent?.sourceUrl || song.sourceUrl || "",
+    artwork: song.artwork || "",
+    updatedAt: latestEvent?.timestamp || song.updatedAt || song.publishedAt || "",
+    contentHash: song.contentHash || ""
+  };
+}
+
+function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
+  const orderedEvents = Array.isArray(events) ? [...events].filter(Boolean).sort(compareReleaseEventsDesc) : [];
+  const orderedSongs = Array.isArray(songs) ? [...songs].filter(Boolean).sort(compareSongsDesc) : [];
+  if (orderedEvents.length === 0 && orderedSongs.length === 0) {
     return buildEmptySiteArtifact();
   }
 
+  const latestEventBySongId = new Map();
+  for (const event of orderedEvents) {
+    if (!event.songId || latestEventBySongId.has(event.songId)) {
+      continue;
+    }
+    latestEventBySongId.set(event.songId, event);
+  }
+
+  const songById = new Map();
+  for (const song of orderedSongs) {
+    songById.set(song.songId, song);
+  }
+
+  for (const [songId, event] of latestEventBySongId.entries()) {
+    if (!songById.has(songId)) {
+      songById.set(songId, {
+        songId,
+        title: event.title || "",
+        state: normalizeStateName(event.stateAfter) || "draft",
+        traceId: event.traceId || "",
+        publishedAt: event.timestamp || "",
+        sourceUrl: event.sourceUrl || "",
+        artwork: "",
+        updatedAt: event.timestamp || "",
+        contentHash: "",
+        releaseDetected: false,
+        status: ""
+      });
+    }
+  }
+
+  const songViews = [];
+  for (const song of songById.values()) {
+    const latestEvent = latestEventBySongId.get(song.songId) || null;
+    const view = buildSongView(song, latestEvent);
+    songViews.push(view);
+  }
+
+  songViews.sort(compareReleaseSongsDesc);
+
+  const signal = songViews.filter((song) => song.state === "draft");
+  const incoming = songViews.filter((song) => song.state === "coming_soon");
+  const released = songViews.filter((song) => song.state === "released");
   const releaseIndex = {};
-  for (const event of ordered) {
-    const key = normalizeReleaseTitle(event.title || event.releaseId || event.eventId || "");
+  for (const song of released) {
+    const key = normalizeReleaseTitle(song.title || song.songId || "");
     if (!key || releaseIndex[key]) {
       continue;
     }
 
     releaseIndex[key] = {
-      id: event.releaseId || event.eventId || "",
-      title: event.title || "",
-      publishedAt: event.publishedAt || event.createdAt || "",
-      sourceUrl: event.sourceUrl || "",
-      traceId: event.traceId || ""
+      id: song.songId || "",
+      title: song.title || "",
+      publishedAt: song.publishedAt || song.updatedAt || "",
+      sourceUrl: song.sourceUrl || "",
+      traceId: song.traceId || ""
     };
   }
 
-  const latest = ordered[0];
-  const generatedAt = latest.publishedAt || latest.createdAt || latest.updatedAt || "";
-  const releaseId = latest.releaseId || latest.eventId || "";
-  const source = latest.source || "youtube";
-  const title = latest.title || "";
-  const sourceUrl = latest.sourceUrl || "";
-  const publishedAt = latest.publishedAt || latest.createdAt || "";
-  const traceId = latest.traceId || latest.releaseId || latest.eventId || "";
+  const latestReleased = released[0] || songViews[0] || null;
+  const latestEvent = orderedEvents[0] || null;
+  const generatedAt = latestReleased?.updatedAt || latestEvent?.timestamp || latestEvent?.createdAt || latestReleased?.publishedAt || "";
+  const releaseId = latestReleased?.songId || latestEvent?.songId || "";
+  const source = latestEvent?.source || (latestReleased?.traceId ? "youtube" : "cli");
+  const title = latestReleased?.title || latestEvent?.title || "";
+  const sourceUrl = latestReleased?.sourceUrl || latestEvent?.sourceUrl || "";
+  const publishedAt = latestReleased?.publishedAt || latestEvent?.timestamp || latestEvent?.createdAt || "";
+  const traceId = latestReleased?.traceId || latestEvent?.traceId || "";
+  const eventsStream = orderedEvents.slice(0, 50).map((event) => ({
+    songId: event.songId || "",
+    eventType: event.eventType || "",
+    stateAfter: normalizeStateName(event.stateAfter) || "draft",
+    timestamp: event.timestamp || event.publishedAt || event.createdAt || ""
+  }));
 
   return {
     generatedAt,
@@ -341,8 +503,43 @@ function buildSiteArtifactFromEvents(events) {
       publishedAt,
       traceId
     },
-    releaseIndex
+    releaseIndex,
+    signal,
+    incoming,
+    released,
+    signalCount: signal.length,
+    comingSoonCount: incoming.length,
+    releasedCount: released.length,
+    eventsStream
   };
+}
+
+async function loadSongsTablePage(exclusiveStartKey) {
+  const input = {
+    TableName: SONGS_TABLE_NAME,
+    Limit: SONGS_TABLE_PAGE_SIZE
+  };
+
+  if (exclusiveStartKey) {
+    input.ExclusiveStartKey = exclusiveStartKey;
+  }
+
+  return dynamo.send(new ScanCommand(input));
+}
+
+async function loadSongsTableItems() {
+  const items = [];
+  let exclusiveStartKey = null;
+
+  do {
+    const page = await loadSongsTablePage(exclusiveStartKey);
+    items.push(...(page?.Items || []));
+    exclusiveStartKey = page?.LastEvaluatedKey || null;
+  } while (exclusiveStartKey);
+
+  return items
+    .map(normalizeSongTableItem)
+    .filter(Boolean);
 }
 
 async function loadEventStreamPage(exclusiveStartKey) {
@@ -397,8 +594,11 @@ async function loadEventStreamItems() {
 }
 
 async function loadLatestSiteArtifactFromEventStream() {
-  const events = await loadEventStreamItems();
-  return buildSiteArtifactFromEvents(events);
+  const [events, songs] = await Promise.all([
+    loadEventStreamItems(),
+    loadSongsTableItems()
+  ]);
+  return buildSiteArtifactFromEvents({ events, songs });
 }
 
 async function resolveSiteArtifact(event = {}) {

@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.41 - April 2026
+- Added EventStream-derived song state resolution and lightweight state buckets to the site artifact builder
+- Included a last-50 event feed for UI animations while keeping SongsTable as the fallback source of truth
+
 ## v1.4.40 - April 2026
 - Added deterministic content hashing and read-before-write idempotency to Shield Ingest CLI
 - Made EventStream emission conditional on new or meaningfully changed content
