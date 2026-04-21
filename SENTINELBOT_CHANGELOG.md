@@ -5,19 +5,20 @@ Versioning note:
 - Patch bumps track prompt tuning, cache additions, and other small bot updates
 - Minor bumps track visible capability additions or new behavioral layers
 - Major bumps track architecture or deployment model changes
+- Always add the newest entry at the top of the file
 
-## v1.4.32 - April 2026
-- Added a hard normalized cache for common identity, song, and FAQ questions
-- Shortened song-context prompts and lowered Anthropic token caps for fallback answers
-- Added structured Anthropic call logging with intent and size metrics
+## v1.4.34 - April 2026
+- Added trace IDs to the generated `site.json` artifact for GitHub Pages
+- Carried release trace metadata into the archive payload and release index
 
 ## v1.4.33 - April 2026
 - Added trace IDs across the release detector, event consumer, and SentinelBot logs
 - Linked song answers back to the underlying song or release ID for easier debugging
 
-## v1.4.34 - April 2026
-- Added trace IDs to the generated `site.json` artifact for GitHub Pages
-- Carried release trace metadata into the archive payload and release index
+## v1.4.32 - April 2026
+- Added a hard normalized cache for common identity, song, and FAQ questions
+- Shortened song-context prompts and lowered Anthropic token caps for fallback answers
+- Added structured Anthropic call logging with intent and size metrics
 
 ## v1.4.31 - April 2026
 - Corrected the canonical Shieldbearer founding answer to April 20, 2025
