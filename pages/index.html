@@ -84,6 +84,96 @@
       padding: 22px;
       overflow: auto;
     }
+    .signal-room {
+      margin-top: 22px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.03);
+      border-radius: 20px;
+      padding: 20px;
+    }
+    .signal-room__head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .signal-room__head h2 {
+      margin: 0;
+      font-size: .82rem;
+      letter-spacing: .24em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .signal-room__head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+    .signal-room__grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .signal-room__lane {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(0,0,0,.24);
+      border-radius: 16px;
+      padding: 14px;
+      min-height: 180px;
+    }
+    .signal-room__lane h3 {
+      margin: 0 0 10px;
+      font-size: .78rem;
+      letter-spacing: .2em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .signal-room__count {
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: .82rem;
+    }
+    .song-list {
+      display: grid;
+      gap: 10px;
+    }
+    .song-row {
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 14px;
+      padding: 12px;
+      background: rgba(255,255,255,.03);
+    }
+    .song-row--hot {
+      border-color: rgba(231,76,60,.34);
+      box-shadow: 0 0 0 1px rgba(231,76,60,.12), 0 0 18px rgba(231,76,60,.12);
+    }
+    .song-row__title {
+      margin: 0;
+      font-size: .98rem;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+    .song-row__meta {
+      margin-top: 4px;
+      font-size: .8rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      word-break: break-word;
+    }
+    .song-row__state {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: .7rem;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      font-family: var(--mono);
+      background: rgba(231,76,60,.12);
+      color: #f3b6ad;
+    }
     pre {
       margin: 0;
       font-family: var(--mono);
@@ -111,6 +201,7 @@
       .wrap { padding-inline: 14px; }
       .hero { padding: 28px 18px; border-radius: 20px; }
       .card { grid-column: span 12; }
+      .signal-room__grid { grid-template-columns: 1fr; }
       .panel { padding: 16px; }
     }
   </style>
@@ -144,6 +235,27 @@
         </div>
       </div>
 
+      <section class="signal-room" id="signalRoom">
+        <div class="signal-room__head">
+          <h2>Signal Room</h2>
+          <p>Event-driven grouping from <code>eventsStream</code> with SongsTable fallback.</p>
+        </div>
+        <div class="signal-room__grid">
+          <section class="signal-room__lane">
+            <h3>In the Signal <span class="signal-room__count" id="signalCount">0</span></h3>
+            <div class="song-list" id="signalList"></div>
+          </section>
+          <section class="signal-room__lane">
+            <h3>Incoming <span class="signal-room__count" id="incomingCount">0</span></h3>
+            <div class="song-list" id="incomingList"></div>
+          </section>
+          <section class="signal-room__lane">
+            <h3>Released <span class="signal-room__count" id="releasedCount">0</span></h3>
+            <div class="song-list" id="releasedList"></div>
+          </section>
+        </div>
+      </section>
+
       <div class="status" id="status"></div>
       <div class="panel">
         <pre id="json">Loading site.json...</pre>
@@ -160,6 +272,12 @@
       bannerTitle: document.getElementById("bannerTitle"),
       sourceUrl: document.getElementById("sourceUrl"),
       lastUpdatedAt: document.getElementById("lastUpdatedAt"),
+      signalCount: document.getElementById("signalCount"),
+      incomingCount: document.getElementById("incomingCount"),
+      releasedCount: document.getElementById("releasedCount"),
+      signalList: document.getElementById("signalList"),
+      incomingList: document.getElementById("incomingList"),
+      releasedList: document.getElementById("releasedList"),
       json: document.getElementById("json"),
       status: document.getElementById("status")
     };
@@ -171,6 +289,128 @@
 
     function formatValue(value, fallback = "Not set") {
       return value ? value : fallback;
+    }
+
+    function normalizeState(value) {
+      const raw = String(value || "").toLowerCase().trim().replace(/\s+/g, "_");
+      if (!raw) return "";
+      if (raw === "signal") return "draft";
+      if (raw === "incoming" || raw === "comingsoon") return "coming_soon";
+      if (raw === "draft" || raw === "coming_soon" || raw === "released") return raw;
+      return "";
+    }
+
+    function collectSongs(site) {
+      if (Array.isArray(site?.songs)) return [...site.songs];
+      const combined = [];
+      if (Array.isArray(site?.signal)) combined.push(...site.signal);
+      if (Array.isArray(site?.incoming)) combined.push(...site.incoming);
+      if (Array.isArray(site?.released)) combined.push(...site.released);
+      return combined;
+    }
+
+    function buildStateMap(site) {
+      const stateBySongId = {};
+      const events = Array.isArray(site?.eventsStream) ? [...site.eventsStream] : [];
+      events.sort((a, b) => {
+        const aTime = Date.parse(a?.timestamp || "") || 0;
+        const bTime = Date.parse(b?.timestamp || "") || 0;
+        return aTime - bTime;
+      });
+
+      for (const event of events) {
+        const songId = String(event?.songId || "").trim();
+        if (!songId) continue;
+        stateBySongId[songId] = normalizeState(event?.stateAfter) || "draft";
+      }
+
+      const songs = collectSongs(site);
+      for (const song of songs) {
+        const songId = String(song?.songId || song?.id || "").trim();
+        if (!songId) continue;
+        if (!stateBySongId[songId]) {
+          stateBySongId[songId] = normalizeState(song?.status || song?.state) || "draft";
+        }
+      }
+
+      return stateBySongId;
+    }
+
+    function songIdOf(song) {
+      return String(song?.songId || song?.id || "").trim();
+    }
+
+    function renderSongRow(song, stateName, hotSongId) {
+      const row = document.createElement("article");
+      row.className = "song-row";
+      if (songIdOf(song) && songIdOf(song) === hotSongId) {
+        row.classList.add("song-row--hot");
+      }
+
+      const title = document.createElement("h4");
+      title.className = "song-row__title";
+      title.textContent = song?.title || songIdOf(song) || "Untitled";
+
+      const meta = document.createElement("div");
+      meta.className = "song-row__meta";
+      meta.textContent = songIdOf(song) || "unknown-song";
+
+      const badge = document.createElement("div");
+      badge.className = "song-row__state";
+      badge.textContent = stateName.replace(/_/g, " ");
+
+      row.appendChild(title);
+      row.appendChild(meta);
+      row.appendChild(badge);
+      return row;
+    }
+
+    function renderSignalRoom(site) {
+      const songs = collectSongs(site);
+      const stateBySongId = buildStateMap(site);
+      const latestEvent = Array.isArray(site?.eventsStream) && site.eventsStream.length
+        ? [...site.eventsStream].sort((a, b) => (Date.parse(a?.timestamp || "") || 0) - (Date.parse(b?.timestamp || "") || 0)).slice(-1)[0]
+        : null;
+      const hotSongId = String(latestEvent?.songId || "").trim();
+
+      const groups = {
+        draft: [],
+        coming_soon: [],
+        released: []
+      };
+
+      for (const song of songs) {
+        const songId = songIdOf(song);
+        if (!songId) continue;
+        const stateName = stateBySongId[songId] || "draft";
+        if (!groups[stateName]) {
+          groups.draft.push(song);
+          continue;
+        }
+        groups[stateName].push(song);
+      }
+
+      const orderedGroups = [
+        ["draft", state.signalList, state.signalCount],
+        ["coming_soon", state.incomingList, state.incomingCount],
+        ["released", state.releasedList, state.releasedCount]
+      ];
+
+      for (const [stateName, listNode, countNode] of orderedGroups) {
+        listNode.textContent = "";
+        const rows = groups[stateName];
+        countNode.textContent = String(rows.length);
+        if (rows.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "song-row";
+          empty.textContent = "No songs";
+          listNode.appendChild(empty);
+          continue;
+        }
+        for (const song of rows) {
+          listNode.appendChild(renderSongRow(song, stateName, hotSongId));
+        }
+      }
     }
 
     async function loadSite() {
@@ -185,6 +425,7 @@
         state.bannerTitle.textContent = formatValue(banner.title);
         state.sourceUrl.textContent = formatValue(banner.sourceUrl);
         state.lastUpdatedAt.textContent = formatValue(site?.homepage?.lastUpdatedAt || site?.generatedAt);
+        renderSignalRoom(site);
         state.json.textContent = JSON.stringify(site, null, 2);
         setStatus("site.json loaded successfully.");
       } catch (error) {
@@ -197,6 +438,9 @@
         state.bannerTitle.textContent = "Unavailable";
         state.sourceUrl.textContent = "Unavailable";
         state.lastUpdatedAt.textContent = "Unavailable";
+        state.signalCount.textContent = "0";
+        state.incomingCount.textContent = "0";
+        state.releasedCount.textContent = "0";
       }
     }
 
