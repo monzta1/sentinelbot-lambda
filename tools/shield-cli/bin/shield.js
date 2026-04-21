@@ -7,6 +7,8 @@ const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
+const DYNAMO_TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+const EVENT_STREAM_PK = "eventstream";
 
 const helpText = `Shield Ingest CLI
 
@@ -121,6 +123,23 @@ function validateSong(parsed) {
   };
 }
 
+function buildCliEventStreamItem(song) {
+  const timestamp = new Date().toISOString();
+  return {
+    id: `${EVENT_STREAM_PK}#CLI_INGEST#${song.slug}`,
+    pk: EVENT_STREAM_PK,
+    sk: `CLI_INGEST#${song.slug}`,
+    eventType: "CLI_INGEST",
+    songId: song.slug,
+    title: song.title,
+    timestamp,
+    source: "shield-cli",
+    hasLyrics: Boolean(song.lyrics),
+    hasMeaning: Boolean(song.songmeaning),
+    hasArtwork: Boolean(song.artwork)
+  };
+}
+
 if (!fileArg) {
   process.stdout.write(helpText);
   process.exit(0);
@@ -160,13 +179,28 @@ async function upsertSong(songResult) {
         createdAt: new Date().toISOString()
       }
     }));
-    return songResult;
   } catch (error) {
     return {
       status: "error",
       reason: "dynamodb_write_failed"
     };
   }
+
+  try {
+    await dynamo.send(new PutCommand({
+      TableName: DYNAMO_TABLE_NAME,
+      Item: buildCliEventStreamItem(song),
+      ConditionExpression: "attribute_not_exists(id)"
+    }));
+  } catch (error) {
+    console.error(JSON.stringify({
+      status: "warning",
+      reason: "eventstream_write_failed",
+      songId: song.slug
+    }));
+  }
+
+  return songResult;
 }
 
 (async () => {

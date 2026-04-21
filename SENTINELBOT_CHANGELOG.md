@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.4.37 - April 2026
+- Added fire-and-forget EventStream logging after Shield Ingest CLI upserts a processed song
+- Kept EventStream failures non-blocking so CLI ingestion still returns success JSON
+
 ## v1.4.36 - April 2026
 - Added Shield Ingest CLI DynamoDB upsert support for processed songs
 - Kept skipped and rejected inputs read-only while preserving JSON-only CLI output
