@@ -17,6 +17,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function buildTraceId(videoId) {
+  return `youtube:${String(videoId || "").trim()}`;
+}
+
 function normalizeText(value) {
   return String(value || "")
     .replace(/\r\n/g, "\n")
@@ -100,11 +104,26 @@ function extractLyricsFromDescription(description) {
     }
   }
 
-  const looksStructured = sectionCount >= 2 || (sectionCount >= 1 && lyricLineCount >= 4) || lyricLineCount >= 10;
+  const looksStructured = sectionCount >= 2 || (sectionCount >= 1 && lyricLineCount >= 3) || lyricLineCount >= 6;
   if (!looksStructured) return "";
 
   const lyrics = normalizeLyricsBlock(kept.join("\n"));
   return lyrics.length >= 100 ? lyrics : "";
+}
+
+function isShortFormTitle(value) {
+  const normalized = normalizeText(value || "").toLowerCase();
+  return (
+    normalized.includes("#shorts") ||
+    /\bshort\b/.test(normalized) ||
+    /\bshorts\b/.test(normalized) ||
+    normalized.includes("short form") ||
+    normalized.includes("short video")
+  );
+}
+
+function isShortFormEntry(title, durationSeconds) {
+  return isShortFormTitle(title) || Number(durationSeconds || 0) > 0 && Number(durationSeconds || 0) < 120;
 }
 
 function buildSongContextFromDescription(description, title = "") {
@@ -305,8 +324,11 @@ function buildReleaseEventItem(video) {
   const timestamp = nowIso();
   const description = normalizeText(video.description || "");
   const lyrics = extractLyricsFromDescription(description);
+  const shortForm = isShortFormEntry(video.title, video.durationSeconds);
+  const traceId = buildTraceId(video.videoId);
   return {
     id: video.videoId,
+    traceId,
     pk: releaseKey,
     sk: releaseKey,
     eventType: "new_content_detected",
@@ -317,6 +339,9 @@ function buildReleaseEventItem(video) {
     lyrics,
     lyricsSource: lyrics ? "youtube_description" : "",
     lyricsConfidence: lyrics ? "medium" : "",
+    contentFormat: shortForm ? "short" : "full",
+    isShort: shortForm,
+    excludeFromTimeline: shortForm,
     publishedAt: video.publishedAt,
     sourceUrl: video.sourceUrl,
     processed: false,
@@ -335,9 +360,12 @@ function buildSongItem(video) {
   const descriptionNormalized = normalizeSongDescription(description);
   const songContext = buildSongContextFromDescription(description, title);
   const lyrics = extractLyricsFromDescription(description);
+  const shortForm = isShortFormEntry(title, video.durationSeconds);
+  const traceId = buildTraceId(video.videoId);
 
   return {
     songId: video.videoId,
+    traceId,
     pk: video.videoId,
     title,
     normalizedTitle,
@@ -349,6 +377,9 @@ function buildSongItem(video) {
     lyrics,
     lyricsSource: lyrics ? "youtube_description" : "",
     lyricsConfidence: lyrics ? "medium" : "",
+    contentFormat: shortForm ? "short" : "full",
+    isShort: shortForm,
+    excludeFromTimeline: shortForm,
     songContext,
     songContextTheme: songContext.theme,
     songContextMeaning: songContext.meaning,
@@ -369,6 +400,7 @@ function buildEventStreamItem(releaseEvent) {
   const timestamp = nowIso();
   return {
     id: `${EVENT_STREAM_PK}#${streamKey}`,
+    traceId: releaseEvent.traceId || buildTraceId(releaseEvent.id),
     pk: EVENT_STREAM_PK,
     sk: streamKey,
     eventType: releaseEvent.eventType,
@@ -516,6 +548,7 @@ exports.handler = async () => {
       }
       const candidateCheck = getReleaseMetadata(video);
       logStage("youtube-release-candidate-evaluated", {
+        traceId: buildTraceId(video.videoId),
         videoId: video.videoId,
         title: video.title,
         durationSeconds: candidateCheck.durationSeconds,
@@ -543,6 +576,7 @@ exports.handler = async () => {
           await writeSongItem(video);
         } catch (error) {
           logStage("song-table-write-failed", {
+            traceId: buildTraceId(video.videoId),
             videoId: video.videoId,
             title: video.title,
             error: error.message
@@ -566,6 +600,7 @@ exports.handler = async () => {
 
     logStage("youtube-release-scan-complete", {
       timestamp: requestTimestamp,
+      traceIds: events.map((event) => event.traceId || null).filter(Boolean),
       scannedCount: enrichedVideos.length,
       detectedCount: newVideos.length,
       createdCount: events.length,
@@ -592,6 +627,7 @@ exports.handler = async () => {
     logStage("youtube-release-scan-failed", {
       timestamp: requestTimestamp,
       error: error.message,
+      traceId: null,
       elapsedMs: Date.now() - startedAt
     });
 

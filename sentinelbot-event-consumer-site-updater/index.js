@@ -14,6 +14,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function buildTraceId(releaseEvent) {
+  return String(releaseEvent?.traceId || `${releaseEvent?.source || "release"}:${releaseEvent?.id || "unknown"}`).trim();
+}
+
 function logStage(stage, details) {
   console.log(JSON.stringify({
     stage,
@@ -35,6 +39,7 @@ function parseReleaseEventPayload(item) {
   const title = payload.title || null;
   const publishedAt = payload.publishedAt || null;
   const sourceUrl = payload.sourceUrl || null;
+  const traceId = buildTraceId(payload);
 
   if (!id || !source || !eventType) {
     throw new Error(`Incomplete release payload for event ${item?.sk || item?.id || "unknown"}`);
@@ -47,6 +52,7 @@ function parseReleaseEventPayload(item) {
     title,
     publishedAt,
     sourceUrl,
+    traceId,
     payload
   };
 }
@@ -56,7 +62,8 @@ function buildSiteUpdateActions(event) {
     {
       action: "homepage banner update",
       reason: `New ${event.source} release detected`,
-      target: event.title || event.id
+      target: event.title || event.id,
+      traceId: event.traceId || null
     },
     {
       action: "release metadata update",
@@ -66,7 +73,8 @@ function buildSiteUpdateActions(event) {
         source: event.source,
         publishedAt: event.publishedAt,
         sourceUrl: event.sourceUrl
-      }
+      },
+      traceId: event.traceId || null
     }
   ];
 }
@@ -224,10 +232,11 @@ exports.handler = async () => {
           releaseEvent = parseReleaseEventPayload(item);
         } catch (error) {
           skippedCount += 1;
-          logStage("event-parse-failed", {
-            eventId: item?.id || null,
-            sk: item?.sk || null,
-            error: error.message
+        logStage("event-parse-failed", {
+          traceId: item?.traceId || null,
+          eventId: item?.id || null,
+          sk: item?.sk || null,
+          error: error.message
           });
           continue;
         }
@@ -241,6 +250,7 @@ exports.handler = async () => {
         });
         const siteArtifact = buildSiteArtifact(sitePayload);
         logStage("site-update-planned", {
+          traceId: releaseEvent.traceId || null,
           eventId: releaseEvent.id,
           source: releaseEvent.source,
           eventType: releaseEvent.eventType,
@@ -271,6 +281,7 @@ exports.handler = async () => {
     } while (exclusiveStartKey);
 
     logStage("event-consumer-complete", {
+      traceId: currentSiteState?.activeReleaseId ? `youtube:${currentSiteState.activeReleaseId}` : null,
       scannedCount,
       processedCount,
       duplicateCount,
@@ -293,6 +304,7 @@ exports.handler = async () => {
     };
   } catch (error) {
     logStage("event-consumer-failed", {
+      traceId: null,
       error: error.message,
       scannedCount,
       processedCount,

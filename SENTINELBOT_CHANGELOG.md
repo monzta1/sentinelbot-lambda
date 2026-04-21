@@ -11,6 +11,10 @@ Versioning note:
 - Shortened song-context prompts and lowered Anthropic token caps for fallback answers
 - Added structured Anthropic call logging with intent and size metrics
 
+## v1.4.33 - April 2026
+- Added trace IDs across the release detector, event consumer, and SentinelBot logs
+- Linked song answers back to the underlying song or release ID for easier debugging
+
 ## v1.4.31 - April 2026
 - Corrected the canonical Shieldbearer founding answer to April 20, 2025
 - Added nearby founding and launch phrasings so the same date stays consistent across Q&A variants

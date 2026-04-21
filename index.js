@@ -574,6 +574,11 @@ async function lookupSongByQuestionFromSongsTable(question) {
 }
 
 async function lookupSongStrictResponse(question) {
+  const result = await lookupSongStrictResult(question);
+  return result ? result.answer : null;
+}
+
+async function lookupSongStrictResult(question) {
   const available = await getSongsTableAvailability();
   if (!available) {
     return null;
@@ -582,14 +587,20 @@ async function lookupSongStrictResponse(question) {
   const song = await lookupSongByQuestionFromSongsTable(question);
   if (!song || !song.publishedAt) return null;
 
+  const traceId = song.songId || null;
   console.log(JSON.stringify({
     lookupSource: "songs-table",
     matchedSongId: song.songId || null,
+    traceId,
     responseMode: "strict-lookup"
   }));
 
   const formattedDate = formatPublishedAtForStrictLookup(song.publishedAt);
-  return song.title ? `${song.title} — ${formattedDate}` : formattedDate;
+  return {
+    answer: song.title ? `${song.title} — ${formattedDate}` : formattedDate,
+    traceId,
+    songId: song.songId || null
+  };
 }
 
 async function resolveSongMeaningLookup(question, history = []) {
@@ -603,6 +614,7 @@ async function resolveSongMeaningLookup(question, history = []) {
       fallbackReason: null,
       songsTableAvailable: songsTableAvailable === true,
       songId: song ? String(song.songId || song.id || "").trim() : null,
+      traceId: song ? String(song.songId || song.id || "").trim() : null,
       context: song ? song.songContext || null : null
     };
   }
@@ -612,7 +624,8 @@ async function resolveSongMeaningLookup(question, history = []) {
     maxTokens: 140,
     intent: "song-meaning",
     normalizedQuery: normalizeCacheQuestion(question),
-    cacheHit: false
+    cacheHit: false,
+    traceId: song ? String(song.songId || song.id || "").trim() : null
   }));
 
   return {
@@ -622,6 +635,7 @@ async function resolveSongMeaningLookup(question, history = []) {
     fallbackReason: null,
     songsTableAvailable: songsTableAvailable === true,
     songId: song ? String(song.songId || song.id || "").trim() : null,
+    traceId: song ? String(song.songId || song.id || "").trim() : null,
     context: song ? song.songContext || null : null
   };
 }
@@ -637,6 +651,7 @@ async function resolveSongLyricsLookup(question, history = []) {
       fallbackReason: null,
       songsTableAvailable: songsTableAvailable === true,
       songId: song ? String(song.songId || song.id || "").trim() : null,
+      traceId: song ? String(song.songId || song.id || "").trim() : null,
       context: song ? song.songContext || null : null,
       lyricsSource: storedLyrics.lyricsSource || null,
       lyricsConfidence: storedLyrics.lyricsConfidence || null
@@ -653,6 +668,7 @@ async function resolveSongLyricsLookup(question, history = []) {
       fallbackReason: "song_not_found",
       songsTableAvailable: songsTableAvailable === true,
       songId: null,
+      traceId: null,
       context: null,
       lyricsSource: null,
       lyricsConfidence: null
@@ -663,7 +679,8 @@ async function resolveSongLyricsLookup(question, history = []) {
     maxTokens: 800,
     intent: "song-lyrics",
     normalizedQuery: normalizeCacheQuestion(question),
-    cacheHit: false
+    cacheHit: false,
+    traceId: song ? String(song.songId || song.id || "").trim() : null
   });
   if (isIncompleteLyricsAnswer(answer)) {
     const retryQuestion = `${question}\n\nPrevious response was incomplete. Return the full structured lyrics only, with verses and chorus intact. Do not summarize. Do not stop early.`;
@@ -671,7 +688,8 @@ async function resolveSongLyricsLookup(question, history = []) {
       maxTokens: 1000,
       intent: "song-lyrics",
       normalizedQuery: normalizeCacheQuestion(question),
-      cacheHit: false
+      cacheHit: false,
+      traceId: song ? String(song.songId || song.id || "").trim() : null
     });
   }
 
@@ -684,6 +702,7 @@ async function resolveSongLyricsLookup(question, history = []) {
       fallbackReason: "lyrics_generation_incomplete",
       songsTableAvailable: songsTableAvailable === true,
       songId: String(song.songId || song.id || "").trim(),
+      traceId: String(song.songId || song.id || "").trim(),
       context: song.songContext || null,
       lyricsSource: "generated",
       lyricsConfidence: "low"
@@ -699,6 +718,7 @@ async function resolveSongLyricsLookup(question, history = []) {
     fallbackReason: null,
     songsTableAvailable: songsTableAvailable === true,
     songId: String(song.songId || song.id || "").trim(),
+    traceId: String(song.songId || song.id || "").trim(),
     context: song.songContext || null,
     lyricsSource: "generated",
     lyricsConfidence: "low"
@@ -715,14 +735,16 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
     return resolveSongLyricsLookup(question, history);
   }
 
-  const strictSongResponse = available ? await lookupSongStrictResponse(question) : null;
-  if (strictSongResponse) {
+  const strictSongResult = available ? await lookupSongStrictResult(question) : null;
+  if (strictSongResult?.answer) {
     return {
-      answer: strictSongResponse,
+      answer: strictSongResult.answer,
       responseMode: "fact",
       lookupMode: "strict-lookup",
       fallbackReason: null,
-      songsTableAvailable: available
+      songsTableAvailable: available,
+      traceId: strictSongResult.traceId || null,
+      songId: strictSongResult.songId || null
     };
   }
 
@@ -737,20 +759,24 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
             responseMode: "fact",
             lookupMode: "degraded-no-songs-table",
             fallbackReason: "songs_table_unavailable",
-            songsTableAvailable: available
+            songsTableAvailable: available,
+            traceId: String(song.songId || song.id || "").trim(),
+            songId: String(song.songId || song.id || "").trim()
           };
         }
       }
 
       if (isSongMeaningQuestion(question)) {
         const summary = song.summary ? `${song.summary} ` : "";
-        return {
-          answer: `${song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
-          responseMode: "meaning",
-          lookupMode: "degraded-no-songs-table",
-          fallbackReason: "songs_table_unavailable",
-          songsTableAvailable: available
-        };
+          return {
+            answer: `${song.title}. ${summary}<a href="${song.meaningUrl}" target="_blank">Song dossier</a>`,
+            responseMode: "meaning",
+            lookupMode: "degraded-no-songs-table",
+            fallbackReason: "songs_table_unavailable",
+            songsTableAvailable: available,
+            traceId: String(song.songId || song.id || "").trim(),
+            songId: String(song.songId || song.id || "").trim()
+          };
       }
 
       return {
@@ -758,7 +784,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
         responseMode: "meaning",
         lookupMode: "degraded-no-songs-table",
         fallbackReason: "songs_table_unavailable",
-        songsTableAvailable: available
+        songsTableAvailable: available,
+        traceId: String(song.songId || song.id || "").trim(),
+        songId: String(song.songId || song.id || "").trim()
       };
     }
 
@@ -766,7 +794,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
       answer: null,
       lookupMode: "degraded-no-songs-table",
       fallbackReason: "songs_table_unavailable",
-      songsTableAvailable: available
+      songsTableAvailable: available,
+      traceId: null,
+      songId: null
     };
   }
 
@@ -779,7 +809,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
           responseMode: "fact",
           lookupMode: "catalog-lookup",
           fallbackReason: null,
-          songsTableAvailable: available
+          songsTableAvailable: available,
+          traceId: String(song.songId || song.id || "").trim(),
+          songId: String(song.songId || song.id || "").trim()
         };
       }
 
@@ -789,7 +821,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
           responseMode: "fact",
           lookupMode: "catalog-lookup",
           fallbackReason: null,
-          songsTableAvailable: available
+          songsTableAvailable: available,
+          traceId: String(song.songId || song.id || "").trim(),
+          songId: String(song.songId || song.id || "").trim()
         };
       }
 
@@ -798,7 +832,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
         responseMode: "fact",
         lookupMode: "catalog-lookup",
         fallbackReason: null,
-        songsTableAvailable: available
+        songsTableAvailable: available,
+        traceId: String(song.songId || song.id || "").trim(),
+        songId: String(song.songId || song.id || "").trim()
       };
     }
 
@@ -809,7 +845,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
         responseMode: "meaning",
         lookupMode: "catalog-lookup",
         fallbackReason: null,
-        songsTableAvailable: available
+        songsTableAvailable: available,
+        traceId: String(song.songId || song.id || "").trim(),
+        songId: String(song.songId || song.id || "").trim()
       };
     }
 
@@ -818,7 +856,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
       responseMode: "meaning",
       lookupMode: "catalog-lookup",
       fallbackReason: null,
-      songsTableAvailable: available
+      songsTableAvailable: available,
+      traceId: String(song.songId || song.id || "").trim(),
+      songId: String(song.songId || song.id || "").trim()
     };
   }
 
@@ -829,7 +869,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
       responseMode: "fact",
       lookupMode: "release-index",
       fallbackReason: null,
-      songsTableAvailable: available
+      songsTableAvailable: available,
+      traceId: String(release.id || "").trim(),
+      songId: String(release.id || "").trim()
     };
   }
 
@@ -837,7 +879,9 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
     answer: null,
     lookupMode: "miss",
     fallbackReason: "song_not_found",
-    songsTableAvailable: available
+    songsTableAvailable: available,
+    traceId: null,
+    songId: null
   };
 }
 
@@ -1919,6 +1963,7 @@ function buildLogItem({
   referer,
   origin,
   repeat,
+  traceId,
   question,
   answer,
   page,
@@ -1945,6 +1990,7 @@ function buildLogItem({
     referer: referer || null,
     origin: origin || null,
     repeat: Boolean(repeat),
+    traceId: traceId || null,
     question,
     answer,
     page,
@@ -2149,12 +2195,14 @@ async function persistGeneratedLyricsToSongsTable(song, lyrics) {
 async function callAnthropic(question, history, extraContext = null, options = {}) {
   const model = process.env.ANTHROPIC_FALLBACK_MODEL || "claude-haiku-4-5-20251001";
   const normalizedQuery = String(options.normalizedQuery || normalizeCacheQuestion(question));
+  const traceId = options.traceId || null;
   const systemPrompt = await getSystemPromptProduction();
   const systemSize = String(systemPrompt || "").length + String(extraContext || "").length;
   const inputSize = String(question || "").length + systemSize + JSON.stringify(history || []).length;
   console.log(JSON.stringify({
     event: "anthropic-call-start",
     intent: options.intent || null,
+    traceId,
     normalizedQuery,
     cacheHit: Boolean(options.cacheHit),
     model,
@@ -2216,6 +2264,7 @@ async function callAnthropic(question, history, extraContext = null, options = {
   console.log(JSON.stringify({
     event: "anthropic-call-complete",
     intent: options.intent || null,
+    traceId,
     normalizedQuery,
     cacheHit: Boolean(options.cacheHit),
     model,
@@ -2257,6 +2306,7 @@ exports.handler = async (event) => {
     const page = requestBody.page || "unknown";
     const historyLength = Array.isArray(history) ? history.length : 0;
     const repeat = markRepeat(question);
+    let traceId = null;
 
     if (!question) {
       const responseTimeMs = Date.now() - startedAt;
@@ -2264,6 +2314,7 @@ exports.handler = async (event) => {
         id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         timestamp: requestTimestamp,
         ...requestMetadata,
+        traceId,
         question,
         answer: "No question provided",
         page,
@@ -2313,6 +2364,7 @@ exports.handler = async (event) => {
         responseModeValue = resolved.responseMode || responseModeValue;
         lyricsSource = resolved.lyricsSource || null;
         lyricsConfidence = resolved.lyricsConfidence || null;
+        traceId = resolved.traceId || resolved.songId || null;
         const resolvedMode = responseModeValue;
 
         if (resolvedMode === "meaning") {
@@ -2350,7 +2402,8 @@ exports.handler = async (event) => {
                 maxTokens: 120,
                 intent: "general-song-fallback",
                 normalizedQuery: normalizeCacheQuestion(question),
-                cacheHit: false
+                cacheHit: false,
+                traceId: song ? String(song.songId || song.id || "").trim() : null
               });
               source = extraContext ? "anthropic-song-context" : "anthropic";
               lookupMode = extraContext ? "anthropic-with-db" : (lookupMode || "anthropic-only");
@@ -2375,7 +2428,8 @@ exports.handler = async (event) => {
             maxTokens: 120,
             intent: "general-fallback",
             normalizedQuery: normalizeCacheQuestion(question),
-            cacheHit: false
+            cacheHit: false,
+            traceId: null
           });
         } catch (err) {
           answer = "Signal lost. Try again.";
@@ -2410,6 +2464,7 @@ exports.handler = async (event) => {
       timestamp: requestTimestamp,
       ...requestMetadata,
       repeat,
+      traceId,
       question,
       answer,
       page,
@@ -2447,6 +2502,7 @@ exports.handler = async (event) => {
         timestamp: requestTimestamp,
         ...requestMetadata,
         repeat,
+        traceId: null,
         question,
         answer: "Signal lost. Try again.",
         page,
