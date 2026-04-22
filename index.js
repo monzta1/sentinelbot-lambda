@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const eventsApi = require("./api/events");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const EVENT_STREAM_TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
@@ -526,37 +527,6 @@ async function fetchEventStreamEvents(since = "") {
   } while (exclusiveStartKey);
 
   return dedupeEventStreamRecords(records).sort(compareEventStreamRecordsAsc);
-}
-
-async function handleEventsApiRequest(event) {
-  const since = String(event?.queryStringParameters?.since || "").trim();
-  try {
-    const events = await fetchEventStreamEvents(since);
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "https://shieldbearerusa.com",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Cache-Control": "no-store"
-      },
-      body: JSON.stringify({ events })
-    };
-  } catch (error) {
-    console.warn("EventStream API unavailable", error.message);
-    return {
-      statusCode: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "https://shieldbearerusa.com",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Cache-Control": "no-store"
-      },
-      body: JSON.stringify({ events: [] })
-    };
-  }
 }
 
 function compareSongLifecycleEventsAsc(a, b) {
@@ -2893,7 +2863,7 @@ exports.handler = async (event) => {
   }
 
   if (requestMethod === "GET" && requestPath === "/api/events") {
-    return handleEventsApiRequest(event);
+    return eventsApi.handler(event);
   }
 
   try {
