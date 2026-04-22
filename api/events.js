@@ -119,6 +119,7 @@ async function queryEventStream(since = "") {
 }
 
 async function handler(event = {}) {
+  console.log("API EVENTS HIT");
   const since = String(event?.queryStringParameters?.since || "").trim();
   try {
     const events = await queryEventStream(since);
