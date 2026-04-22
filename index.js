@@ -407,6 +407,23 @@ function getRequestPath(event) {
   return rawPath.replace(/\/+$/, "") || "/";
 }
 
+async function handleEventStream(event) {
+  if (getRequestMethod(event) === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "https://shieldbearerusa.com",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Methods": "GET, OPTIONS"
+      },
+      body: ""
+    };
+  }
+
+  return eventsApi.handler(event);
+}
+
 function normalizeEventStreamApiRecord(item) {
   if (!item || typeof item !== "object") {
     return null;
@@ -2847,6 +2864,8 @@ exports.handler = async (event) => {
   };
   const startedAt = Date.now();
   const requestTimestamp = new Date().toISOString();
+  const path = String(event?.rawPath || event?.path || "/").trim() || "/";
+  const requestMethod = getRequestMethod(event);
   const requestBody = (() => {
     try {
       return JSON.parse(event.body || "{}");
@@ -2855,15 +2874,21 @@ exports.handler = async (event) => {
     }
   })();
   const requestMetadata = getRequestMetadata(event);
-  const requestMethod = getRequestMethod(event);
-  const requestPath = getRequestPath(event);
+
+  if (path === "/api/events") {
+    return handleEventStream(event);
+  }
 
   if (requestMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
 
-  if (requestMethod === "GET" && requestPath === "/api/events") {
-    return eventsApi.handler(event);
+  if (requestMethod === "GET" && path !== "/") {
+    return {
+      statusCode: 404,
+      headers,
+      body: JSON.stringify({ error: "Not found" })
+    };
   }
 
   try {
