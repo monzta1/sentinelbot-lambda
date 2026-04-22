@@ -4,10 +4,12 @@ const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const EVENT_STREAM_TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
 const SITE_JSON_PATH = path.join(__dirname, "docs", "site.json");
 const SONG_INDEX_PATH = path.join(__dirname, "docs", "song-index.json");
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const SONGS_TABLE_TITLE_INDEX = process.env.SONGS_TABLE_TITLE_INDEX || "normalizedTitle-index";
+const SONG_LIFECYCLE_CACHE_TTL_MS = Math.max(30000, Number.parseInt(process.env.SONG_LIFECYCLE_CACHE_TTL_MS || "45000", 10) || 45000);
 function loadSentinelbotVersion() {
   const envVersion = String(process.env.SENTINELBOT_VERSION || "").trim();
   if (envVersion) return envVersion;
@@ -48,6 +50,7 @@ let cachedReleaseIndex = null;
 let cachedSongIndex = null;
 let songsTableAvailable = null;
 let songsTableAvailabilityPromise = null;
+const songLifecycleCache = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -64,6 +67,15 @@ function normalizeReleaseTitle(value) {
 
 function normalizeSongTitle(value) {
   return normalizeReleaseTitle(value);
+}
+
+function normalizeLifecycleState(value) {
+  const raw = String(value || "").toLowerCase().trim().replace(/\s+/g, "_");
+  if (!raw) return "";
+  if (raw === "released") return "released";
+  if (raw === "incoming" || raw === "coming_soon" || raw === "comingsoon") return "incoming";
+  if (raw === "draft" || raw === "signal" || raw === "created") return "draft";
+  return "";
 }
 
 function normalizeSongDescription(value) {
@@ -331,6 +343,304 @@ function buildSongContextFromStoredData(song) {
   };
 }
 
+function buildSongCurrentStateSummary(song) {
+  const lifecycle = song?.songLifecycle || null;
+  const state = String(lifecycle?.currentState || normalizeLifecycleState(song?.status || song?.state || "") || "").trim();
+  const releaseStatus = String(lifecycle?.releaseStatus || "").trim();
+  if (!state && !releaseStatus) {
+    return "";
+  }
+
+  const pieces = [];
+  if (state) {
+    pieces.push(`Current stage: ${state}`);
+  }
+  if (releaseStatus) {
+    pieces.push(`Release status: ${releaseStatus}`);
+  }
+  return pieces.join("; ");
+}
+
+function normalizeSongEventRecord(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const payload = item.payload && typeof item.payload === "object" ? item.payload : null;
+  const eventType = String(item.eventType || payload?.eventType || "").trim().toUpperCase();
+  if (eventType !== "SONG_CREATED" && eventType !== "SONG_UPDATED" && eventType !== "SONG_RELEASED") {
+    return null;
+  }
+
+  const songId = String(item.songId || payload?.songId || payload?.id || "").trim();
+  if (!songId) {
+    return null;
+  }
+
+  const timestamp = String(item.timestamp || payload?.timestamp || payload?.publishedAt || item.createdAt || item.updatedAt || "").trim();
+  const data = {
+    title: String(item.title || payload?.title || "").trim(),
+    source: String(item.source || payload?.source || "").trim(),
+    youtubeUrl: String(item.youtubeUrl || payload?.youtubeUrl || payload?.sourceUrl || "").trim(),
+    sourceUrl: String(item.sourceUrl || payload?.sourceUrl || payload?.youtubeUrl || "").trim(),
+    contentHash: String(item.contentHash || payload?.contentHash || "").trim(),
+    stateAfter: String(item.stateAfter || payload?.stateAfter || "").trim(),
+    publishedAt: String(item.publishedAt || payload?.publishedAt || "").trim()
+  };
+
+  return {
+    songId,
+    eventType,
+    timestamp,
+    data
+  };
+}
+
+function compareSongLifecycleEventsAsc(a, b) {
+  const aTime = Date.parse(a?.timestamp || "") || 0;
+  const bTime = Date.parse(b?.timestamp || "") || 0;
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+  return String(a?.eventType || "").localeCompare(String(b?.eventType || "")) || String(a?.timestamp || "").localeCompare(String(b?.timestamp || ""));
+}
+
+function buildSongLifecycleModel(songId, title, events, fallbackSong = null) {
+  const orderedEvents = Array.isArray(events) ? [...events].filter(Boolean).sort(compareSongLifecycleEventsAsc) : [];
+  const createdEvent = orderedEvents.find((event) => event.eventType === "SONG_CREATED") || null;
+  const updatedEvents = orderedEvents.filter((event) => event.eventType === "SONG_UPDATED");
+  const releasedEvent = [...orderedEvents].reverse().find((event) => event.eventType === "SONG_RELEASED") || null;
+  const hasEvents = orderedEvents.length > 0;
+  const fallbackState = normalizeLifecycleState(fallbackSong?.status || fallbackSong?.state || fallbackSong?.releaseStatus || "");
+
+  let currentState = "draft";
+  if (releasedEvent) {
+    currentState = "released";
+  } else if (updatedEvents.length > 0) {
+    currentState = "incoming";
+  } else if (createdEvent) {
+    currentState = "draft";
+  } else if (fallbackState) {
+    currentState = fallbackState;
+  }
+
+  const releaseStatus = releasedEvent ? "released" : (hasEvents ? "unreleased" : (fallbackState === "released" ? "released" : "unknown"));
+
+  return {
+    songId: String(songId || fallbackSong?.songId || "").trim(),
+    title: String(title || fallbackSong?.title || fallbackSong?.canonicalTitle || "").trim(),
+    lifecycle: orderedEvents.map((event) => ({
+      eventType: event.eventType,
+      timestamp: event.timestamp,
+      data: event.data
+    })),
+    currentState,
+    releaseStatus,
+    createdAt: createdEvent?.timestamp || String(fallbackSong?.createdAt || fallbackSong?.updatedAt || fallbackSong?.publishedAt || "").trim(),
+    releasedAt: releasedEvent?.timestamp || String(fallbackSong?.publishedAt || "").trim(),
+    firstEventAt: orderedEvents[0]?.timestamp || String(fallbackSong?.createdAt || fallbackSong?.updatedAt || fallbackSong?.publishedAt || "").trim(),
+    lastEventAt: orderedEvents[orderedEvents.length - 1]?.timestamp || String(fallbackSong?.updatedAt || fallbackSong?.publishedAt || "").trim()
+  };
+}
+
+function buildSongLifecycleContext(song) {
+  const lifecycle = song?.songLifecycle;
+  if (!lifecycle || !Array.isArray(lifecycle.lifecycle) || lifecycle.lifecycle.length === 0) {
+    return "";
+  }
+
+  const lines = [];
+  lines.push("Lifecycle history:");
+  lines.push(`- Current stage: ${lifecycle.currentState || "draft"}`);
+  lines.push(`- Release status: ${lifecycle.releaseStatus || "unknown"}`);
+
+  const created = lifecycle.lifecycle.find((event) => event.eventType === "SONG_CREATED") || lifecycle.lifecycle[0];
+  if (created?.timestamp) {
+    lines.push(`- First created: ${formatPublishedAtForStrictLookup(created.timestamp)}`);
+  }
+
+  for (const event of lifecycle.lifecycle) {
+    const data = event.data || {};
+    const stamp = formatPublishedAtForStrictLookup(event.timestamp);
+    if (event.eventType === "SONG_CREATED") {
+      const title = data.title || song?.title || song?.canonicalTitle || song?.songId || "this song";
+      lines.push(`- ${stamp}: created as "${title}"${data.contentHash ? ` (content hash ${data.contentHash})` : ""}`);
+      continue;
+    }
+
+    if (event.eventType === "SONG_UPDATED") {
+      const details = [];
+      if (data.title && data.title !== (created?.data?.title || song?.title || song?.canonicalTitle || "")) {
+        details.push(`title became "${data.title}"`);
+      }
+      if (data.contentHash) {
+        details.push(`content hash updated to ${data.contentHash}`);
+      }
+      if (data.source && data.source !== "shield-ingest-cli") {
+        details.push(`source ${data.source}`);
+      }
+      lines.push(`- ${stamp}: updated${details.length ? ` (${details.join(", ")})` : ""}`);
+      continue;
+    }
+
+    if (event.eventType === "SONG_RELEASED") {
+      const sourceLabel = /youtube/i.test(data.source || data.sourceUrl || data.youtubeUrl || "") || /youtube/i.test(String(event.data?.source || ""))
+        ? "YouTube detection"
+        : (data.source || "the release detector");
+      const extra = data.youtubeUrl ? ` and YouTube URL ${data.youtubeUrl}` : "";
+      lines.push(`- ${stamp}: released after ${sourceLabel}${extra}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function buildSongLifecycleNarrative(song) {
+  const lifecycle = song?.songLifecycle;
+  if (!lifecycle || !Array.isArray(lifecycle.lifecycle) || lifecycle.lifecycle.length === 0) {
+    return "";
+  }
+
+  const created = lifecycle.lifecycle.find((event) => event.eventType === "SONG_CREATED") || lifecycle.lifecycle[0];
+  const updatedEvents = lifecycle.lifecycle.filter((event) => event.eventType === "SONG_UPDATED");
+  const releasedEvent = lifecycle.lifecycle.find((event) => event.eventType === "SONG_RELEASED") || null;
+  const pieces = [];
+
+  if (created?.timestamp) {
+    const createdLabel = created.data?.title || song?.title || song?.canonicalTitle || song?.songId || "this song";
+    pieces.push(`Originally created on ${formatPublishedAtForStrictLookup(created.timestamp)} as "${createdLabel}"`);
+  }
+
+  if (updatedEvents.length) {
+    const updatePieces = [];
+    for (const event of updatedEvents) {
+      const details = [];
+      if (event.data?.contentHash) {
+        details.push(`content hash ${event.data.contentHash}`);
+      }
+      if (event.data?.title && event.data.title !== (created?.data?.title || song?.title || song?.canonicalTitle || "")) {
+        details.push(`title "${event.data.title}"`);
+      }
+      if (event.data?.source && event.data.source !== "shield-ingest-cli") {
+        details.push(`source ${event.data.source}`);
+      }
+      const stamp = formatPublishedAtForStrictLookup(event.timestamp);
+      updatePieces.push(`${stamp}${details.length ? ` (${details.join(", ")})` : ""}`);
+    }
+    pieces.push(`Then it was updated ${updatePieces.join("; ")}`);
+  }
+
+  if (releasedEvent?.timestamp) {
+    const sourceLabel = /youtube/i.test(releasedEvent.data?.source || releasedEvent.data?.sourceUrl || releasedEvent.data?.youtubeUrl || "")
+      ? "YouTube detection"
+      : (releasedEvent.data?.source || "the release detector");
+    const releaseBits = [`Finally it was released on ${formatPublishedAtForStrictLookup(releasedEvent.timestamp)}`, `after ${sourceLabel}`];
+    if (releasedEvent.data?.youtubeUrl) {
+      releaseBits.push(`with ${releasedEvent.data.youtubeUrl}`);
+    }
+    pieces.push(releaseBits.join(" "));
+  }
+
+  if (!pieces.length) {
+    return "";
+  }
+
+  return pieces.join(". ") + ".";
+}
+
+function buildSongLifecycleAnswer(song, question) {
+  const lifecycle = song?.songLifecycle;
+  if (!lifecycle || !Array.isArray(lifecycle.lifecycle) || lifecycle.lifecycle.length === 0) {
+    return null;
+  }
+
+  const normalized = normalizeQuestion(question);
+  const title = String(song?.canonicalTitle || song?.title || song?.songId || "this song").trim();
+  const createdEvent = lifecycle.lifecycle.find((event) => event.eventType === "SONG_CREATED") || lifecycle.lifecycle[0] || null;
+  const releasedEvent = [...lifecycle.lifecycle].reverse().find((event) => event.eventType === "SONG_RELEASED") || null;
+  const updatedCount = lifecycle.lifecycle.filter((event) => event.eventType === "SONG_UPDATED").length;
+  const currentState = String(lifecycle.currentState || normalizeLifecycleState(song?.status || song?.state || song?.releaseStatus || "") || "").trim();
+  const currentSummary = buildSongCurrentStateSummary(song);
+  const narrative = buildSongLifecycleNarrative(song);
+
+  if (
+    normalized.includes("when was it first created") ||
+    normalized.includes("when was this song created") ||
+    normalized.includes("when was it created") ||
+    normalized.includes("first created")
+  ) {
+    const createdAt = createdEvent?.timestamp || lifecycle.createdAt || "";
+    if (!createdAt) return null;
+    const createdTitle = String(createdEvent?.data?.title || title).trim();
+    return `${title} was first created on ${formatPublishedAtForStrictLookup(createdAt)} as "${createdTitle}".`;
+  }
+
+  if (
+    normalized.includes("what stage is it currently in") ||
+    normalized.includes("what stage is this song in") ||
+    normalized.includes("what stage is it in") ||
+    normalized.includes("current stage")
+  ) {
+    const stage = currentState || "draft";
+    const pieces = [`${title} is currently in ${stage}.`];
+    if (currentSummary) {
+      pieces.push(currentSummary.endsWith(".") ? currentSummary : `${currentSummary}.`);
+    }
+    if (createdEvent?.timestamp) {
+      pieces.push(`It was first created on ${formatPublishedAtForStrictLookup(createdEvent.timestamp)}.`);
+    }
+    if (releasedEvent?.timestamp) {
+      pieces.push(`It was released on ${formatPublishedAtForStrictLookup(releasedEvent.timestamp)}.`);
+    }
+    if (updatedCount > 0) {
+      pieces.push(`The EventStream shows ${updatedCount} update${updatedCount === 1 ? "" : "s"} before release.`);
+    }
+    return pieces.join(" ");
+  }
+
+  if (
+    normalized.includes("what changed in this song") ||
+    normalized.includes("what changed in this track") ||
+    normalized.includes("what changed") ||
+    normalized.includes("how did it evolve") ||
+    normalized.includes("how has it evolved") ||
+    normalized.includes("before release") ||
+    normalized.includes("evolve before release") ||
+    normalized.includes("song lifecycle")
+  ) {
+    if (narrative) {
+      return narrative;
+    }
+  }
+
+  if (narrative) {
+    return `${title}. ${narrative}`;
+  }
+
+  if (currentSummary) {
+    return `${title}. ${currentSummary}.`;
+  }
+
+  return null;
+}
+
+function isSongLifecycleQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  return normalized.includes("what changed in this song") ||
+    normalized.includes("what changed in this track") ||
+    normalized.includes("what changed") ||
+    normalized.includes("how did it evolve") ||
+    normalized.includes("how has it evolved") ||
+    normalized.includes("when was it first created") ||
+    normalized.includes("first created") ||
+    normalized.includes("what stage is it currently in") ||
+    normalized.includes("current stage") ||
+    normalized.includes("what stage is this song in") ||
+    normalized.includes("before release") ||
+    normalized.includes("evolve before release") ||
+    normalized.includes("song lifecycle");
+}
+
 function resolveStoredLyrics(song) {
   if (!song) return null;
 
@@ -565,7 +875,7 @@ async function lookupSongByQuestionFromSongsTable(question) {
     const lyricsSource = String(item.lyricsSource || "").trim();
     const lyricsConfidence = String(item.lyricsConfidence || "").trim();
 
-    return {
+    return await enrichSongWithLifecycle({
       title: item.title || title,
       canonicalTitle: String(item.canonicalTitle || item.title || title).trim(),
       normalizedCanonicalTitle: normalizeSongTitle(item.normalizedCanonicalTitle || item.canonicalTitle || item.title || title),
@@ -581,11 +891,85 @@ async function lookupSongByQuestionFromSongsTable(question) {
       lyricsSource,
       lyricsConfidence,
       songContext: context
-    };
+    });
   } catch (error) {
     console.warn("SongsTable lookup unavailable", error.message);
     return null;
   }
+}
+
+async function loadSongLifecycleFromEventStream(songId, fallbackSong = null) {
+  const cleanSongId = String(songId || "").trim();
+  if (!cleanSongId) {
+    return buildSongLifecycleModel("", fallbackSong?.title || fallbackSong?.canonicalTitle || "", [], fallbackSong);
+  }
+
+  const cached = songLifecycleCache.get(cleanSongId);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  const lifecycleEvents = [];
+  let exclusiveStartKey = null;
+
+  do {
+    const response = await dynamo.send(new QueryCommand({
+      TableName: EVENT_STREAM_TABLE_NAME,
+      KeyConditionExpression: "#pk = :pk",
+      FilterExpression: "#songId = :songId AND #eventType IN (:created, :updated, :released)",
+      ExpressionAttributeNames: {
+        "#pk": "pk",
+        "#songId": "songId",
+        "#eventType": "eventType"
+      },
+      ExpressionAttributeValues: {
+        ":pk": "eventstream",
+        ":songId": cleanSongId,
+        ":created": "SONG_CREATED",
+        ":updated": "SONG_UPDATED",
+        ":released": "SONG_RELEASED"
+      },
+      ExclusiveStartKey: exclusiveStartKey || undefined,
+      ScanIndexForward: true
+    }));
+
+    for (const item of response?.Items || []) {
+      const record = normalizeSongEventRecord(item);
+      if (record && record.songId === cleanSongId) {
+        lifecycleEvents.push(record);
+      }
+    }
+
+    exclusiveStartKey = response?.LastEvaluatedKey || null;
+  } while (exclusiveStartKey);
+
+  const lifecycle = buildSongLifecycleModel(cleanSongId, fallbackSong?.title || fallbackSong?.canonicalTitle || "", lifecycleEvents, fallbackSong);
+  songLifecycleCache.set(cleanSongId, {
+    value: lifecycle,
+    expiresAt: now + SONG_LIFECYCLE_CACHE_TTL_MS
+  });
+
+  return lifecycle;
+}
+
+async function enrichSongWithLifecycle(song) {
+  const songId = String(song?.songId || song?.id || "").trim();
+  if (!song || !songId) {
+    return song;
+  }
+
+  const lifecycle = await loadSongLifecycleFromEventStream(songId, song);
+  return {
+    ...song,
+    songId,
+    songLifecycle: lifecycle,
+    lifecycle: lifecycle.lifecycle,
+    currentState: lifecycle.currentState,
+    releaseStatus: lifecycle.releaseStatus,
+    createdAt: song.createdAt || lifecycle.createdAt || "",
+    releasedAt: lifecycle.releasedAt || song.publishedAt || ""
+  };
 }
 
 async function lookupSongStrictResponse(question) {
@@ -599,8 +983,10 @@ async function lookupSongStrictResult(question) {
     return null;
   }
 
-  const song = await lookupSongByQuestionFromSongsTable(question);
-  if (!song || !song.publishedAt) return null;
+  const song = await enrichSongWithLifecycle(await lookupSongByQuestionFromSongsTable(question));
+  if (!song) return null;
+  const lifecycleReleasedAt = String(song?.songLifecycle?.releasedAt || "").trim();
+  if (!song.publishedAt && !lifecycleReleasedAt) return null;
 
   const traceId = song.songId || null;
   console.log(JSON.stringify({
@@ -610,7 +996,7 @@ async function lookupSongStrictResult(question) {
     responseMode: "strict-lookup"
   }));
 
-  const formattedDate = formatPublishedAtForStrictLookup(song.publishedAt);
+  const formattedDate = formatPublishedAtForStrictLookup(lifecycleReleasedAt || song.publishedAt || "");
   return {
     answer: song.title ? `${song.title} — ${formattedDate}` : formattedDate,
     traceId,
@@ -618,8 +1004,8 @@ async function lookupSongStrictResult(question) {
   };
 }
 
-async function resolveSongMeaningLookup(question, history = []) {
-  const song = await lookupSongByQuestion(question);
+async function resolveSongMeaningLookup(question, history = [], songOverride = null) {
+  const song = songOverride || await lookupSongByQuestion(question);
   const localMeaning = buildLocalSongMeaningAnswer(song);
   if (localMeaning) {
     return {
@@ -655,8 +1041,8 @@ async function resolveSongMeaningLookup(question, history = []) {
   };
 }
 
-async function resolveSongLyricsLookup(question, history = []) {
-  const song = await lookupSongByQuestion(question);
+async function resolveSongLyricsLookup(question, history = [], songOverride = null) {
+  const song = songOverride || await lookupSongByQuestion(question);
   const storedLyrics = resolveStoredLyrics(song);
   if (storedLyrics?.lyrics) {
     return {
@@ -741,14 +1127,9 @@ async function resolveSongLyricsLookup(question, history = []) {
 }
 
 async function resolveSongLookup(question, history = [], intent = classifySongIntent(question)) {
-  const responseMode = getResponseMode(intent);
   const available = await getSongsTableAvailability();
-  if (responseMode === "meaning") {
-    return resolveSongMeaningLookup(question, history);
-  }
-  if (responseMode === "lyrics") {
-    return resolveSongLyricsLookup(question, history);
-  }
+  const song = await lookupSongByQuestion(question);
+  const lifecycleQuestion = isSongLifecycleQuestion(question);
 
   const strictSongResult = available ? await lookupSongStrictResult(question) : null;
   if (strictSongResult?.answer) {
@@ -763,11 +1144,35 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
     };
   }
 
+  if (lifecycleQuestion && song) {
+    const lifecycleAnswer = buildSongLifecycleAnswer(song, question);
+    if (lifecycleAnswer) {
+      return {
+        answer: lifecycleAnswer,
+        responseMode: "fact",
+        lookupMode: "song-lifecycle",
+        fallbackReason: null,
+        songsTableAvailable: available,
+        traceId: String(song.songId || song.id || "").trim(),
+        songId: String(song.songId || song.id || "").trim(),
+        context: song.songContext || null
+      };
+    }
+  }
+
+  const responseMode = getResponseMode(intent);
+  if (responseMode === "meaning") {
+    return resolveSongMeaningLookup(question, history, song);
+  }
+  if (responseMode === "lyrics") {
+    return resolveSongLyricsLookup(question, history, song);
+  }
+
   if (!available) {
-    const song = await lookupSongByQuestion(question);
     if (song) {
       if (isReleaseQuestion(question)) {
-        const answer = formatFactResponse(song.title, song.publishedAt);
+        const releasedAt = String(song?.songLifecycle?.releasedAt || song.publishedAt || "").trim();
+        const answer = formatFactResponse(song.title, releasedAt);
         if (answer) {
           return {
             answer,
@@ -815,12 +1220,12 @@ async function resolveSongLookup(question, history = [], intent = classifySongIn
     };
   }
 
-  const song = await lookupSongByQuestion(question);
   if (song) {
     if (isReleaseQuestion(question)) {
-      if (song.publishedAt) {
+      const releasedAt = String(song?.songLifecycle?.releasedAt || song.publishedAt || "").trim();
+      if (releasedAt) {
         return {
-          answer: formatFactResponse(song.canonicalTitle || song.title, song.publishedAt),
+          answer: formatFactResponse(song.canonicalTitle || song.title, releasedAt),
           responseMode: "fact",
           lookupMode: "catalog-lookup",
           fallbackReason: null,
@@ -1034,7 +1439,7 @@ function isSongLookupQuestion(question) {
     songIndex.bySlug?.[normalizedTitle] ||
     releaseIndex[normalizedTitle]
   );
-  const explicitSongIntent = /\b(release(?:d| date)?|when was|when did|lyrics?|meaning|story behind|scripture behind|song|track|music|single|official|come out|dossier)\b/i.test(normalized);
+  const explicitSongIntent = /\b(release(?:d| date)?|when was|when did|lyrics?|meaning|story behind|scripture behind|song|track|music|single|official|come out|dossier|what changed|evolve|evolved|created|stage|lifecycle|current stage)\b/i.test(normalized);
   const contextIntent = isSongContextQuestion(question);
 
   return knownSong || explicitSongIntent || contextIntent;
@@ -1142,7 +1547,7 @@ async function lookupSongByQuestion(question) {
   const parsedLyrics = String(song.parsedLyrics || "").trim();
   const cachedLyrics = String(song.cachedLyrics || "").trim();
 
-  return {
+  return await enrichSongWithLifecycle({
     title: song.title || title,
     canonicalTitle: song.canonicalTitle || song.title || title,
     meaningUrl,
@@ -1158,7 +1563,7 @@ async function lookupSongByQuestion(question) {
     parsedLyrics,
     cachedLyrics,
     songContext: context
-  };
+  });
 }
 
 const SYSTEM_PROMPT = `You are SentinelBot — the AI guardian of the Shieldbearer site. You speak in Shieldbearer's voice: direct, bold, Scripture-first. No fluff. No corporate tone. No hedging. Your answers are short, sharp, and confident. You do not ramble.
@@ -2058,6 +2463,8 @@ function buildSongAnthropicContext(song) {
   const lines = [`CATALOG DATA for the track "${title}":`];
 
   if (song.publishedAt) lines.push(`- Released: ${song.publishedAt}`);
+  const lifecycleSummary = buildSongCurrentStateSummary(song);
+  if (lifecycleSummary) lines.push(`- ${lifecycleSummary}`);
   if (context.theme) lines.push(`- Theme: ${context.theme}`);
   if (context.meaning) lines.push(`- Meaning: ${context.meaning}`);
   if (context.spiritualTone) lines.push(`- Spiritual tone: ${context.spiritualTone}`);
@@ -2065,6 +2472,11 @@ function buildSongAnthropicContext(song) {
     lines.push(`- Scripture: ${context.scriptureReferences.join(", ")}`);
   }
   if (context.summary) lines.push(`- Summary: ${context.summary}`);
+  const lifecycleContext = buildSongLifecycleContext(song);
+  if (lifecycleContext) {
+    lines.push("");
+    lines.push(lifecycleContext);
+  }
   if (!context.summary && song.description) {
     lines.push(`- Description: ${String(song.description).slice(0, 240)}`);
   }
