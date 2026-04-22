@@ -396,6 +396,169 @@ function normalizeSongEventRecord(item) {
   };
 }
 
+function getRequestMethod(event) {
+  return String(event?.requestContext?.http?.method || event?.httpMethod || "").trim().toUpperCase();
+}
+
+function getRequestPath(event) {
+  const rawPath = String(event?.rawPath || event?.requestContext?.http?.path || event?.path || "").trim();
+  if (!rawPath) return "/";
+  return rawPath.replace(/\/+$/, "") || "/";
+}
+
+function normalizeEventStreamApiRecord(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const payload = item.payload && typeof item.payload === "object" ? item.payload : null;
+  const eventType = String(item.eventType || payload?.eventType || "").trim().toUpperCase();
+  const songId = String(item.songId || payload?.songId || payload?.id || "").trim();
+  const timestamp = String(item.timestamp || payload?.timestamp || payload?.publishedAt || item.createdAt || item.updatedAt || "").trim();
+  const id = String(item.id || payload?.id || "").trim();
+
+  if (!eventType || !songId || !timestamp) {
+    return null;
+  }
+
+  return {
+    id,
+    songId,
+    eventType,
+    title: String(item.title || payload?.title || "").trim(),
+    timestamp,
+    source: String(item.source || payload?.source || "").trim(),
+    sourceUrl: String(item.sourceUrl || payload?.sourceUrl || payload?.youtubeUrl || "").trim(),
+    youtubeUrl: String(item.youtubeUrl || payload?.youtubeUrl || payload?.sourceUrl || "").trim(),
+    contentHash: String(item.contentHash || payload?.contentHash || "").trim(),
+    stateAfter: String(item.stateAfter || payload?.stateAfter || "").trim(),
+    traceId: String(item.traceId || payload?.traceId || "").trim(),
+    payload,
+    createdAt: String(item.createdAt || "").trim(),
+    updatedAt: String(item.updatedAt || "").trim()
+  };
+}
+
+function getEventStreamDedupKey(event) {
+  const id = String(event?.id || "").trim();
+  if (id) return `id:${id}`;
+  return [
+    String(event?.songId || "").trim(),
+    String(event?.timestamp || "").trim(),
+    String(event?.eventType || "").trim()
+  ].join("|");
+}
+
+function compareEventStreamRecordsAsc(a, b) {
+  const aTime = Date.parse(a?.timestamp || "") || 0;
+  const bTime = Date.parse(b?.timestamp || "") || 0;
+  if (aTime !== bTime) {
+    return aTime - bTime;
+  }
+
+  const aId = String(a?.id || a?.songId || "");
+  const bId = String(b?.id || b?.songId || "");
+  return aId.localeCompare(bId);
+}
+
+function dedupeEventStreamRecords(records) {
+  const seen = new Set();
+  const deduped = [];
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const key = getEventStreamDedupKey(record);
+    if (!key || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(record);
+  }
+
+  return deduped;
+}
+
+async function fetchEventStreamEvents(since = "") {
+  const cleanSince = String(since || "").trim();
+  const sinceTime = cleanSince ? Date.parse(cleanSince) : NaN;
+  const hasValidSince = Number.isFinite(sinceTime);
+  const queryOptions = {
+    TableName: EVENT_STREAM_TABLE_NAME,
+    KeyConditionExpression: "#pk = :pk",
+    ExpressionAttributeNames: {
+      "#pk": "pk",
+      "#sk": "sk"
+    },
+    ExpressionAttributeValues: {
+      ":pk": "eventstream"
+    },
+    ScanIndexForward: true
+  };
+
+  if (hasValidSince) {
+    queryOptions.KeyConditionExpression = "#pk = :pk AND #sk > :sinceKey";
+    queryOptions.ExpressionAttributeValues[":sinceKey"] = `${cleanSince}#\uffff`;
+  }
+
+  const records = [];
+  let exclusiveStartKey = null;
+
+  do {
+    const response = await dynamo.send(new QueryCommand({
+      ...queryOptions,
+      ExclusiveStartKey: exclusiveStartKey || undefined,
+      ProjectionExpression: "id, songId, eventType, title, timestamp, source, sourceUrl, youtubeUrl, contentHash, stateAfter, traceId, payload, createdAt, updatedAt, pk, sk"
+    }));
+
+    for (const item of response?.Items || []) {
+      const record = normalizeEventStreamApiRecord(item);
+      if (!record) {
+        continue;
+      }
+
+      if (hasValidSince && !(Date.parse(record.timestamp) > sinceTime)) {
+        continue;
+      }
+
+      records.push(record);
+    }
+
+    exclusiveStartKey = response?.LastEvaluatedKey || null;
+  } while (exclusiveStartKey);
+
+  return dedupeEventStreamRecords(records).sort(compareEventStreamRecordsAsc);
+}
+
+async function handleEventsApiRequest(event) {
+  const since = String(event?.queryStringParameters?.since || "").trim();
+  try {
+    const events = await fetchEventStreamEvents(since);
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "https://shieldbearerusa.com",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Cache-Control": "no-store"
+      },
+      body: JSON.stringify({ events })
+    };
+  } catch (error) {
+    console.warn("EventStream API unavailable", error.message);
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "https://shieldbearerusa.com",
+        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Cache-Control": "no-store"
+      },
+      body: JSON.stringify({ events: [] })
+    };
+  }
+}
+
 function compareSongLifecycleEventsAsc(a, b) {
   const aTime = Date.parse(a?.timestamp || "") || 0;
   const bTime = Date.parse(b?.timestamp || "") || 0;
@@ -2710,7 +2873,7 @@ exports.handler = async (event) => {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "https://shieldbearerusa.com",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS"
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
   };
   const startedAt = Date.now();
   const requestTimestamp = new Date().toISOString();
@@ -2722,9 +2885,15 @@ exports.handler = async (event) => {
     }
   })();
   const requestMetadata = getRequestMetadata(event);
+  const requestMethod = getRequestMethod(event);
+  const requestPath = getRequestPath(event);
 
-  if (event.requestContext?.http?.method === "OPTIONS") {
+  if (requestMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
+  }
+
+  if (requestMethod === "GET" && requestPath === "/api/events") {
+    return handleEventsApiRequest(event);
   }
 
   try {
