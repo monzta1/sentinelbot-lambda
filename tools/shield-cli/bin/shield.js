@@ -282,13 +282,11 @@ async function writeUpdate(existing, song, contentHash, nowIso) {
     "#contentHash": "contentHash",
     "#songId": "songId",
     "#status": "status",
-    "#title": "title",
     "#updatedAt": "updatedAt"
   };
   const expressionValues = {
     ":comingSoon": "coming_soon",
     ":contentHash": contentHash,
-    ":title": normalizeValue(song.title),
     ":updatedAt": nowIso
   };
   const setExpressions = [
@@ -298,6 +296,8 @@ async function writeUpdate(existing, song, contentHash, nowIso) {
   ];
 
   if (normalizeValue(existing.title) !== normalizeValue(song.title)) {
+    expressionNames["#title"] = "title";
+    expressionValues[":title"] = normalizeValue(song.title);
     setExpressions.unshift("#title = :title");
   }
 
