@@ -404,7 +404,17 @@ function getRequestMethod(event) {
 function getRequestPath(event) {
   const rawPath = String(event?.rawPath || event?.requestContext?.http?.path || event?.path || "").trim();
   if (!rawPath) return "/";
-  return rawPath.replace(/\/+$/, "") || "/";
+
+  const trimmed = rawPath.replace(/\/+$/, "") || "/";
+  const stage = String(event?.requestContext?.stage || "").trim();
+  if (stage && trimmed.startsWith(`/${stage}/`)) {
+    return trimmed.slice(stage.length + 1) || "/";
+  }
+  if (stage && trimmed === `/${stage}`) {
+    return "/";
+  }
+
+  return trimmed;
 }
 
 async function handleEventStream(event) {
@@ -2864,7 +2874,7 @@ exports.handler = async (event) => {
   };
   const startedAt = Date.now();
   const requestTimestamp = new Date().toISOString();
-  const path = String(event?.rawPath || event?.path || "/").trim() || "/";
+  const path = getRequestPath(event);
   const requestMethod = getRequestMethod(event);
   const requestBody = (() => {
     try {
