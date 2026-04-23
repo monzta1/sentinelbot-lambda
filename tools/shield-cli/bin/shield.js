@@ -53,6 +53,16 @@ function slugifyTitle(title) {
     .replace(/^-|-$/g, "");
 }
 
+function normalizeMatchName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function listFiles(directory) {
   if (!fs.existsSync(directory)) {
     return [];
@@ -149,17 +159,21 @@ function buildContentHash(song) {
   return crypto.createHash("sha256").update(JSON.stringify(stablePayload)).digest("hex");
 }
 
-function detectArtwork(filePath, slug) {
-  if (!slug) return null;
+function detectArtwork(filePath, title, slug) {
+  if (!title && !slug) return null;
 
   const directory = path.dirname(filePath);
   const supportedExtensions = new Set([".jpg", ".jpeg", ".png", ".webp"]);
   const entries = fs.readdirSync(directory, { withFileTypes: true });
+  const matchTitle = normalizeMatchName(title);
+  const matchSlug = normalizeMatchName(slug);
 
   const exactMatch = entries.find((entry) => {
     if (!entry.isFile()) return false;
     const parsed = path.parse(entry.name);
-    return supportedExtensions.has(parsed.ext.toLowerCase()) && parsed.name.toLowerCase() === slug;
+    if (!supportedExtensions.has(parsed.ext.toLowerCase())) return false;
+    const stem = normalizeMatchName(parsed.name);
+    return stem === matchSlug || stem === matchTitle;
   });
 
   if (exactMatch) {
@@ -169,7 +183,9 @@ function detectArtwork(filePath, slug) {
   const containsMatch = entries.find((entry) => {
     if (!entry.isFile()) return false;
     const parsed = path.parse(entry.name);
-    return supportedExtensions.has(parsed.ext.toLowerCase()) && parsed.name.toLowerCase().includes(slug);
+    if (!supportedExtensions.has(parsed.ext.toLowerCase())) return false;
+    const stem = normalizeMatchName(parsed.name);
+    return (matchSlug && stem.includes(matchSlug)) || (matchTitle && stem.includes(matchTitle));
   });
 
   return containsMatch ? containsMatch.name : null;
@@ -196,7 +212,7 @@ function isQualifyingSong(parsed, songPayload) {
 }
 
 function buildSongContentPayload(filePath, parsed, slug) {
-  const artworkFile = detectArtwork(filePath, slug);
+  const artworkFile = detectArtwork(filePath, parsed.title, slug);
   const lyrics = normalizeValue(parsed.lyrics);
   const songMeaning = normalizeValue(parsed.songmeaning);
   return {

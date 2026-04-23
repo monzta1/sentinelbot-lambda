@@ -206,7 +206,7 @@ function runDropzoneScanCase() {
     "#lyrics",
     ""
   ].join("\n"));
-  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "artwork-only-song-cover.jpg"));
+  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "Artwork Only Song.jpg"));
 
   fs.writeFileSync(path.join(dropzoneDir, "title-only.txt"), [
     "#title",
@@ -259,7 +259,7 @@ function runPartialExistingUpsertCase() {
     "Go DOWN, Moses!",
     "Burn through Egypt’s gates,"
   ].join("\n"));
-  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "let-my-people-go-cover.jpg"));
+  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "Let My People Go.jpg"));
 
   fs.writeFileSync(stateFile, `${JSON.stringify({
     "let-my-people-go": {
@@ -294,7 +294,7 @@ function runPartialExistingUpsertCase() {
   const storedRecord = storedState["let-my-people-go"];
   assert(storedRecord.lyrics !== "Old lyrics", "partial-upsert: lyrics should be refreshed");
   assert(storedRecord.songmeaning === "Latest meaning from the dropzone.", "partial-upsert: songmeaning should be refreshed");
-  assert(storedRecord.artwork === "let-my-people-go-cover.jpg", "partial-upsert: artwork should be attached");
+  assert(storedRecord.artwork === "Let My People Go.jpg", "partial-upsert: artwork should be attached");
 }
 
 try {
