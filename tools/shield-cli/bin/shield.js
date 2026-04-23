@@ -541,6 +541,8 @@ async function persistSong(song, options = {}) {
         title: song.title,
         contentHash,
         artworkUrl: song.artworkUrl,
+        lyrics: song.lyrics,
+        songMeaning: song.songMeaning,
         timestamp: nowIso,
         source: "shield-ingest-cli"
       }).catch((error) => {
@@ -580,6 +582,8 @@ async function persistSong(song, options = {}) {
       title: song.title,
       contentHash,
       artworkUrl: song.artworkUrl,
+      lyrics: song.lyrics,
+      songMeaning: song.songMeaning,
       timestamp: nowIso,
       source: "shield-ingest-cli"
     }).catch((error) => {
