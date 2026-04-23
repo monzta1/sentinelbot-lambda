@@ -206,7 +206,7 @@ function runDropzoneScanCase() {
     "#lyrics",
     ""
   ].join("\n"));
-  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "artwork-only-song.jpg"));
+  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "artwork-only-song-cover.jpg"));
 
   fs.writeFileSync(path.join(dropzoneDir, "title-only.txt"), [
     "#title",
@@ -241,6 +241,62 @@ function runDropzoneScanCase() {
   assert(!storedState["title-only-song"], "dropzone-scan: title-only song should not be queued");
 }
 
+function runPartialExistingUpsertCase() {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "shield-cli-partial-"));
+  const stateFile = path.join(workspace, "state.json");
+  const eventFile = path.join(workspace, "events.json");
+  const dropzoneDir = path.join(workspace, "dropzone");
+  fs.mkdirSync(dropzoneDir, { recursive: true });
+
+  fs.writeFileSync(path.join(dropzoneDir, "let-my-people-go.txt"), [
+    "#title",
+    "Let My People Go",
+    "",
+    "#songmeaning",
+    "Latest meaning from the dropzone.",
+    "",
+    "#lyrics",
+    "Go DOWN, Moses!",
+    "Burn through Egypt’s gates,"
+  ].join("\n"));
+  fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "let-my-people-go-cover.jpg"));
+
+  fs.writeFileSync(stateFile, `${JSON.stringify({
+    "let-my-people-go": {
+      songId: "let-my-people-go",
+      title: "Let My People Go",
+      lyrics: "Old lyrics",
+      contentHash: "old-hash",
+      status: "coming_soon",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }
+  }, null, 2)}\n`);
+
+  const result = runCliWithArgs(["ingest", "-"], {
+    SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
+    SHIELD_CLI_EVENT_STATE_FILE: eventFile,
+    SHIELD_CLI_DROPZONE_DIR: dropzoneDir
+  });
+
+  assert(result.error == null, "partial-upsert: cli execution failed");
+  assert(result.stderr.trim() === "", "partial-upsert: expected no stderr output");
+
+  const parsed = parseJson(result.stdout, "partial-upsert");
+  assert(parsed.status === "processed", `partial-upsert: expected processed but got ${parsed.status}`);
+  assert(parsed.queued === 1, `partial-upsert: expected one queued song but got ${parsed.queued}`);
+
+  const events = loadEvents(eventFile);
+  assert(events.length === 1, `partial-upsert: expected one event but got ${events.length}`);
+  assert(events[0].eventType === "SONG_UPDATED", "partial-upsert: expected SONG_UPDATED");
+
+  const storedState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  const storedRecord = storedState["let-my-people-go"];
+  assert(storedRecord.lyrics !== "Old lyrics", "partial-upsert: lyrics should be refreshed");
+  assert(storedRecord.songmeaning === "Latest meaning from the dropzone.", "partial-upsert: songmeaning should be refreshed");
+  assert(storedRecord.artwork === "let-my-people-go-cover.jpg", "partial-upsert: artwork should be attached");
+}
+
 try {
   runIdempotencySuite();
   console.log("PASS idempotency");
@@ -250,6 +306,8 @@ try {
   console.log("PASS no-title");
   runDropzoneScanCase();
   console.log("PASS dropzone-scan");
+  runPartialExistingUpsertCase();
+  console.log("PASS partial-upsert");
   console.log("ALL TESTS PASSED");
 } catch (error) {
   console.error(`FAIL ${error.message}`);

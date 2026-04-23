@@ -183,14 +183,12 @@ function isQualifyingSong(parsed, songPayload) {
 
   const lyrics = normalizeValue(songPayload?.lyrics);
   const artworkUrl = normalizeValue(songPayload?.artworkUrl);
-  const artworkFile = artworkUrl ? path.basename(artworkUrl) : "";
-  const slug = slugifyTitle(title);
 
   if (lyrics) {
     return true;
   }
 
-  if (artworkFile && slug && path.parse(artworkFile).name.toLowerCase() === slug) {
+  if (artworkUrl) {
     return true;
   }
 
