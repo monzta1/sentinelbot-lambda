@@ -12,6 +12,8 @@ const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const TEST_STATE_FILE = process.env.SHIELD_CLI_DYNAMO_STATE_FILE || "";
 const DEFAULT_DROPZONE_DIR = process.env.SHIELD_CLI_DROPZONE_DIR || path.join(os.homedir(), "Shieldbearer", "dropzone");
+const DEFAULT_ARTWORK_PUBLIC_DIR = process.env.SHIELD_CLI_ARTWORK_PUBLIC_DIR || path.resolve(__dirname, "../../../../shieldbearer-website/images/signal-room");
+const DEFAULT_ARTWORK_PUBLIC_BASE_URL = process.env.SHIELD_CLI_ARTWORK_PUBLIC_BASE_URL || "https://shieldbearerusa.com";
 
 const helpText = `Shield Ingest CLI
 
@@ -61,6 +63,31 @@ function normalizeMatchName(value) {
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function mimeTypeFromArtworkPath(artworkPath) {
+  const ext = path.extname(String(artworkPath || "")).toLowerCase();
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  return null;
+}
+
+function publishArtwork(filePath, songId) {
+  const mimeType = mimeTypeFromArtworkPath(filePath);
+  if (!mimeType) return null;
+
+  const extension = path.extname(String(filePath || "")).toLowerCase();
+  if (!extension) return null;
+
+  const targetDirectory = DEFAULT_ARTWORK_PUBLIC_DIR;
+  const fileName = `${songId}${extension}`;
+  const targetPath = path.join(targetDirectory, fileName);
+  fs.mkdirSync(targetDirectory, { recursive: true });
+  fs.copyFileSync(filePath, targetPath);
+
+  const baseUrl = String(DEFAULT_ARTWORK_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+  return `${baseUrl}/images/signal-room/${fileName}`;
 }
 
 function listFiles(directory) {
@@ -215,12 +242,15 @@ function buildSongContentPayload(filePath, parsed, slug) {
   const artworkFile = detectArtwork(filePath, parsed.title, slug);
   const lyrics = normalizeValue(parsed.lyrics);
   const songMeaning = normalizeValue(parsed.songmeaning);
+  const artworkPath = artworkFile ? path.join(path.dirname(filePath), artworkFile) : null;
+  const artworkUrl = artworkPath ? publishArtwork(artworkPath, slug) : null;
   return {
     lyrics,
     lyricsPreview: extractLyricsPreview(parsed.lyrics),
     songMeaning,
     songmeaning: songMeaning,
-    artworkUrl: artworkFile ? path.join(path.dirname(filePath), artworkFile) : null
+    artwork: artworkFile || null,
+    artworkUrl
   };
 }
 
@@ -281,7 +311,7 @@ function buildInsertItem(song, contentHash, nowIso) {
   if (normalizeValue(song.lyrics)) item.lyrics = normalizeValue(song.lyrics);
   if (normalizeValue(song.lyricsPreview)) item.lyricsPreview = normalizeValue(song.lyricsPreview);
   if (normalizeValue(song.artworkUrl)) item.artworkUrl = normalizeValue(song.artworkUrl);
-  if (normalizeValue(song.artworkUrl)) item.artwork = normalizeValue(path.basename(song.artworkUrl));
+  if (normalizeValue(song.artwork)) item.artwork = normalizeValue(song.artwork);
 
   return item;
 }
@@ -302,7 +332,7 @@ function buildMergedUpdate(existing, song, contentHash, nowIso) {
   if (nextLyrics != null && normalizeValue(existing.lyrics) !== nextLyrics) next.lyrics = nextLyrics;
   if (nextLyricsPreview != null && normalizeValue(existing.lyricsPreview) !== nextLyricsPreview) next.lyricsPreview = nextLyricsPreview;
   if (nextArtwork != null && normalizeValue(existing.artworkUrl) !== nextArtwork) next.artworkUrl = nextArtwork;
-  if (nextArtwork != null && normalizeValue(existing.artwork) !== path.basename(nextArtwork)) next.artwork = path.basename(nextArtwork);
+  if (normalizeValue(song.artwork) != null && normalizeValue(existing.artwork) !== normalizeValue(song.artwork)) next.artwork = normalizeValue(song.artwork);
 
   next.contentHash = contentHash;
   next.updatedAt = nowIso;
@@ -369,6 +399,12 @@ async function writeUpdate(existing, song, contentHash, nowIso) {
     expressionNames["#lyrics"] = "lyrics";
     expressionValues[":lyrics"] = normalizeValue(song.lyrics);
     setExpressions.push("#lyrics = :lyrics");
+  }
+
+  if (normalizeValue(song.artworkUrl) != null && normalizeValue(existing.artworkUrl) !== normalizeValue(song.artworkUrl)) {
+    expressionNames["#artworkUrl"] = "artworkUrl";
+    expressionValues[":artworkUrl"] = normalizeValue(song.artworkUrl);
+    setExpressions.push("#artworkUrl = :artworkUrl");
   }
 
   if (normalizeValue(song.artwork) != null && normalizeValue(existing.artwork) !== normalizeValue(song.artwork)) {
@@ -455,6 +491,7 @@ async function ingestSongFile(filePath, { dryRun = false } = {}) {
       songmeaning: contentPayload.songmeaning,
       lyrics: contentPayload.lyrics,
       lyricsPreview: contentPayload.lyricsPreview,
+      artwork: contentPayload.artwork,
       artworkUrl: contentPayload.artworkUrl
     }, {
       dryRun
@@ -465,6 +502,7 @@ async function ingestSongFile(filePath, { dryRun = false } = {}) {
       filePath
     };
   } catch (error) {
+    console.error(error);
     return {
       status: "error",
       reason: "dynamodb_write_failed",
@@ -480,6 +518,19 @@ async function persistSong(song, options = {}) {
   const contentHash = buildContentHash(song);
   const existing = await fetchExistingSong(song.songId);
   const nowIso = new Date().toISOString();
+  const nextArtworkUrl = normalizeValue(song.artworkUrl);
+  const nextLyrics = normalizeValue(song.lyrics);
+  const nextSongMeaning = normalizeValue(song.songMeaning);
+  const nextSongmeaning = normalizeValue(song.songmeaning);
+  const existingArtworkUrl = normalizeValue(existing?.artworkUrl);
+  const existingLyrics = normalizeValue(existing?.lyrics);
+  const existingSongMeaning = normalizeValue(existing?.songMeaning);
+  const existingSongmeaning = normalizeValue(existing?.songmeaning);
+  const hasMissingMetadata =
+    (nextArtworkUrl && existingArtworkUrl !== nextArtworkUrl) ||
+    (nextLyrics && existingLyrics !== nextLyrics) ||
+    (nextSongMeaning && existingSongMeaning !== nextSongMeaning) ||
+    (nextSongmeaning && existingSongmeaning !== nextSongmeaning);
 
   if (!existing) {
     if (!dryRun) {
@@ -489,6 +540,7 @@ async function persistSong(song, options = {}) {
         songId: song.songId,
         title: song.title,
         contentHash,
+        artworkUrl: song.artworkUrl,
         timestamp: nowIso,
         source: "shield-ingest-cli"
       }).catch((error) => {
@@ -510,7 +562,7 @@ async function persistSong(song, options = {}) {
   }
 
   const existingHash = normalizeValue(existing.contentHash);
-  if (existingHash === contentHash) {
+  if (existingHash === contentHash && !hasMissingMetadata) {
     return {
       status: "unchanged",
       songId: song.songId,
@@ -527,6 +579,7 @@ async function persistSong(song, options = {}) {
       songId: song.songId,
       title: song.title,
       contentHash,
+      artworkUrl: song.artworkUrl,
       timestamp: nowIso,
       source: "shield-ingest-cli"
     }).catch((error) => {

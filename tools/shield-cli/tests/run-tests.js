@@ -30,6 +30,13 @@ function runCliWithArgs(args, env = {}) {
   });
 }
 
+function buildArtworkEnv(workspace) {
+  return {
+    SHIELD_CLI_ARTWORK_PUBLIC_DIR: path.join(workspace, "public-artwork"),
+    SHIELD_CLI_ARTWORK_PUBLIC_BASE_URL: "https://example.test"
+  };
+}
+
 function loadEvents(eventFile) {
   if (!fs.existsSync(eventFile)) {
     return [];
@@ -62,6 +69,7 @@ function runIdempotencySuite() {
   fs.copyFileSync(artworkFile, artworkPath);
 
   const first = runCli(filePath, {
+    ...buildArtworkEnv(workspace),
     SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
     SHIELD_CLI_EVENT_STATE_FILE: eventFile
   });
@@ -81,6 +89,7 @@ function runIdempotencySuite() {
   assert(events[0].payload.source === "shield-ingest-cli", "idempotency: emitted create event source mismatch");
 
   const second = runCli(filePath, {
+    ...buildArtworkEnv(workspace),
     SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
     SHIELD_CLI_EVENT_STATE_FILE: eventFile
   });
@@ -100,6 +109,7 @@ function runIdempotencySuite() {
   fs.writeFileSync(filePath, updatedContent);
 
   const third = runCli(filePath, {
+    ...buildArtworkEnv(workspace),
     SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
     SHIELD_CLI_EVENT_STATE_FILE: eventFile
   });
@@ -150,6 +160,7 @@ function runEmptyFieldProtectionCase() {
   }, null, 2)}\n`);
 
   const result = runCli(filePath, {
+    ...buildArtworkEnv(path.dirname(stateFile)),
     SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
     SHIELD_CLI_EVENT_STATE_FILE: eventFile
   });
@@ -217,6 +228,7 @@ function runDropzoneScanCase() {
   ].join("\n"));
 
   const result = runCliWithArgs(["ingest", "-"], {
+    ...buildArtworkEnv(workspace),
     SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
     SHIELD_CLI_EVENT_STATE_FILE: eventFile,
     SHIELD_CLI_DROPZONE_DIR: dropzoneDir
@@ -268,12 +280,14 @@ function runPartialExistingUpsertCase() {
       lyrics: "Old lyrics",
       contentHash: "old-hash",
       status: "coming_soon",
+      artworkUrl: "",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z"
     }
   }, null, 2)}\n`);
 
   const result = runCliWithArgs(["ingest", "-"], {
+    ...buildArtworkEnv(workspace),
     SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
     SHIELD_CLI_EVENT_STATE_FILE: eventFile,
     SHIELD_CLI_DROPZONE_DIR: dropzoneDir
@@ -289,11 +303,13 @@ function runPartialExistingUpsertCase() {
   const events = loadEvents(eventFile);
   assert(events.length === 1, `partial-upsert: expected one event but got ${events.length}`);
   assert(events[0].eventType === "SONG_UPDATED", "partial-upsert: expected SONG_UPDATED");
+  assert(events[0].artworkUrl && events[0].artworkUrl.startsWith("https://example.test/"), "partial-upsert: emitted artworkUrl missing");
 
   const storedState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
   const storedRecord = storedState["let-my-people-go"];
   assert(storedRecord.lyrics !== "Old lyrics", "partial-upsert: lyrics should be refreshed");
   assert(storedRecord.songmeaning === "Latest meaning from the dropzone.", "partial-upsert: songmeaning should be refreshed");
+  assert(storedRecord.artworkUrl && storedRecord.artworkUrl.startsWith("https://example.test/"), "partial-upsert: artworkUrl should be attached");
   assert(storedRecord.artwork === "Let My People Go.jpg", "partial-upsert: artwork should be attached");
 }
 
