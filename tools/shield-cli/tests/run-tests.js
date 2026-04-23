@@ -33,7 +33,8 @@ function runCliWithArgs(args, env = {}) {
 function buildArtworkEnv(workspace) {
   return {
     SHIELD_CLI_ARTWORK_PUBLIC_DIR: path.join(workspace, "public-artwork"),
-    SHIELD_CLI_ARTWORK_PUBLIC_BASE_URL: "https://example.test"
+    SHIELD_CLI_ARTWORK_PUBLIC_BASE_URL: "https://example.test",
+    SHIELD_CLI_ARTWORK_COPY_ONLY: "1"
   };
 }
 
@@ -313,6 +314,61 @@ function runPartialExistingUpsertCase() {
   assert(storedRecord.artwork === "Let My People Go.jpg", "partial-upsert: artwork should be attached");
 }
 
+function runCleanReplaceCase() {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "shield-cli-clean-replace-"));
+  const stateFile = path.join(workspace, "state.json");
+  const eventFile = path.join(workspace, "events.json");
+  const dropzoneDir = path.join(workspace, "dropzone");
+  fs.mkdirSync(dropzoneDir, { recursive: true });
+
+  fs.writeFileSync(path.join(dropzoneDir, "let-my-people-go.txt"), [
+    "#title",
+    "Let My People Go",
+    "",
+    "#songmeaning",
+    "New meaning from the dropzone.",
+    "",
+    "#lyrics",
+    "Go DOWN, Moses!",
+    "Burn through Egypt’s gates,"
+  ].join("\n"));
+
+  fs.writeFileSync(stateFile, `${JSON.stringify({
+    "let-my-people-go": {
+      songId: "let-my-people-go",
+      title: "Let My People Go",
+      lyrics: "Old lyrics",
+      songmeaning: "Old meaning",
+      artworkUrl: "https://example.test/old-artwork.jpg",
+      artwork: "old-artwork.jpg",
+      contentHash: "old-hash",
+      status: "coming_soon",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    }
+  }, null, 2)}\n`);
+
+  const result = runCliWithArgs(["ingest", "-"], {
+    ...buildArtworkEnv(workspace),
+    SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
+    SHIELD_CLI_EVENT_STATE_FILE: eventFile,
+    SHIELD_CLI_DROPZONE_DIR: dropzoneDir
+  });
+
+  assert(result.error == null, "clean-replace: cli execution failed");
+  assert(result.stderr.trim() === "", "clean-replace: expected no stderr output");
+
+  const parsed = parseJson(result.stdout, "clean-replace");
+  assert(parsed.status === "processed" || parsed.status === "updated", `clean-replace: expected processed/updated but got ${parsed.status}`);
+
+  const storedState = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  const storedRecord = storedState["let-my-people-go"];
+  assert(storedRecord.lyrics === "Go DOWN, Moses!\nBurn through Egypt’s gates,", "clean-replace: lyrics should be replaced");
+  assert(storedRecord.songmeaning === "New meaning from the dropzone.", "clean-replace: songmeaning should be replaced");
+  assert(!("artworkUrl" in storedRecord), "clean-replace: artworkUrl should be removed when not provided");
+  assert(!("artwork" in storedRecord), "clean-replace: artwork should be removed when not provided");
+}
+
 try {
   runIdempotencySuite();
   console.log("PASS idempotency");
@@ -324,6 +380,8 @@ try {
   console.log("PASS dropzone-scan");
   runPartialExistingUpsertCase();
   console.log("PASS partial-upsert");
+  runCleanReplaceCase();
+  console.log("PASS clean-replace");
   console.log("ALL TESTS PASSED");
 } catch (error) {
   console.error(`FAIL ${error.message}`);

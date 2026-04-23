@@ -4,6 +4,7 @@ const fs = require("fs");
 const crypto = require("crypto");
 const path = require("path");
 const os = require("os");
+const { execFileSync } = require("child_process");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { emitSongEvent } = require("../src/event-stream");
@@ -74,17 +75,20 @@ function mimeTypeFromArtworkPath(artworkPath) {
 }
 
 function publishArtwork(filePath, songId) {
-  const mimeType = mimeTypeFromArtworkPath(filePath);
-  if (!mimeType) return null;
-
-  const extension = path.extname(String(filePath || "")).toLowerCase();
-  if (!extension) return null;
-
   const targetDirectory = DEFAULT_ARTWORK_PUBLIC_DIR;
-  const fileName = `${songId}${extension}`;
+  const fileName = `${songId}.jpg`;
   const targetPath = path.join(targetDirectory, fileName);
   fs.mkdirSync(targetDirectory, { recursive: true });
-  fs.copyFileSync(filePath, targetPath);
+  if (process.env.SHIELD_CLI_ARTWORK_COPY_ONLY === "1") {
+    fs.copyFileSync(filePath, targetPath);
+  } else {
+    try {
+      execFileSync("sips", ["-s", "format", "jpeg", "-Z", "1024", filePath, "--out", targetPath], { stdio: "ignore" });
+    } catch (error) {
+      console.error(error);
+      return null;
+    }
+  }
 
   const baseUrl = String(DEFAULT_ARTWORK_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
   return `${baseUrl}/images/signal-room/${fileName}`;
@@ -334,6 +338,15 @@ function buildMergedUpdate(existing, song, contentHash, nowIso) {
   if (nextArtwork != null && normalizeValue(existing.artworkUrl) !== nextArtwork) next.artworkUrl = nextArtwork;
   if (normalizeValue(song.artwork) != null && normalizeValue(existing.artwork) !== normalizeValue(song.artwork)) next.artwork = normalizeValue(song.artwork);
 
+  if (nextSongMeaning == null) delete next.songMeaning;
+  if (nextSongmeaning == null) delete next.songmeaning;
+  if (nextLyrics == null) delete next.lyrics;
+  if (nextLyricsPreview == null) delete next.lyricsPreview;
+  if (nextArtwork == null) {
+    delete next.artworkUrl;
+    delete next.artwork;
+  }
+
   next.contentHash = contentHash;
   next.updatedAt = nowIso;
   if (!normalizeValue(next.status)) next.status = "coming_soon";
@@ -378,46 +391,62 @@ async function writeUpdate(existing, song, contentHash, nowIso) {
     ":updatedAt": nowIso
   };
   const setExpressions = [
+    "#title = :title",
     "#contentHash = :contentHash",
     "#updatedAt = :updatedAt",
     "#status = if_not_exists(#status, :comingSoon)"
   ];
+  const removeExpressions = [];
 
-  if (normalizeValue(existing.title) !== normalizeValue(song.title)) {
-    expressionNames["#title"] = "title";
-    expressionValues[":title"] = normalizeValue(song.title);
-    setExpressions.unshift("#title = :title");
-  }
+  expressionNames["#title"] = "title";
+  expressionValues[":title"] = normalizeValue(song.title);
 
-  if (normalizeValue(song.songmeaning) != null && normalizeValue(existing.songmeaning) !== normalizeValue(song.songmeaning)) {
+  if (normalizeValue(song.songmeaning) != null) {
     expressionNames["#songmeaning"] = "songmeaning";
     expressionValues[":songmeaning"] = normalizeValue(song.songmeaning);
     setExpressions.push("#songmeaning = :songmeaning");
+  } else {
+    expressionNames["#songmeaning"] = "songmeaning";
+    removeExpressions.push("#songmeaning");
   }
 
-  if (normalizeValue(song.lyrics) != null && normalizeValue(existing.lyrics) !== normalizeValue(song.lyrics)) {
+  if (normalizeValue(song.lyrics) != null) {
     expressionNames["#lyrics"] = "lyrics";
     expressionValues[":lyrics"] = normalizeValue(song.lyrics);
     setExpressions.push("#lyrics = :lyrics");
+  } else {
+    expressionNames["#lyrics"] = "lyrics";
+    removeExpressions.push("#lyrics");
   }
 
-  if (normalizeValue(song.artworkUrl) != null && normalizeValue(existing.artworkUrl) !== normalizeValue(song.artworkUrl)) {
+  if (normalizeValue(song.artworkUrl) != null) {
     expressionNames["#artworkUrl"] = "artworkUrl";
     expressionValues[":artworkUrl"] = normalizeValue(song.artworkUrl);
     setExpressions.push("#artworkUrl = :artworkUrl");
+  } else {
+    expressionNames["#artworkUrl"] = "artworkUrl";
+    removeExpressions.push("#artworkUrl");
   }
 
-  if (normalizeValue(song.artwork) != null && normalizeValue(existing.artwork) !== normalizeValue(song.artwork)) {
+  if (normalizeValue(song.artwork) != null) {
     expressionNames["#artwork"] = "artwork";
     expressionValues[":artwork"] = normalizeValue(song.artwork);
     setExpressions.push("#artwork = :artwork");
+  } else {
+    expressionNames["#artwork"] = "artwork";
+    removeExpressions.push("#artwork");
+  }
+
+  const updateSegments = [`SET ${setExpressions.join(", ")}`];
+  if (removeExpressions.length > 0) {
+    updateSegments.push(`REMOVE ${removeExpressions.join(", ")}`);
   }
 
   await dynamo.send(new UpdateCommand({
     TableName: SONGS_TABLE_NAME,
     Key: { songId: song.songId },
     ConditionExpression: "attribute_exists(#songId)",
-    UpdateExpression: `SET ${setExpressions.join(", ")}`,
+    UpdateExpression: updateSegments.join(" "),
     ExpressionAttributeNames: expressionNames,
     ExpressionAttributeValues: expressionValues
   }));
