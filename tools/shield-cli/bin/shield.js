@@ -3,6 +3,7 @@
 const fs = require("fs");
 const crypto = require("crypto");
 const path = require("path");
+const os = require("os");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const { emitSongEvent } = require("../src/event-stream");
@@ -10,11 +11,13 @@ const { emitSongEvent } = require("../src/event-stream");
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const TEST_STATE_FILE = process.env.SHIELD_CLI_DYNAMO_STATE_FILE || "";
+const DEFAULT_DROPZONE_DIR = process.env.SHIELD_CLI_DROPZONE_DIR || path.join(os.homedir(), "Shieldbearer", "dropzone");
 
 const helpText = `Shield Ingest CLI
 
 Usage:
-  shield ingest <file>
+  shield ingest [-|file]
+  shield ingest
 
 Options:
   --help     Show help
@@ -48,6 +51,20 @@ function slugifyTitle(title) {
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
+}
+
+function listFiles(directory) {
+  if (!fs.existsSync(directory)) {
+    return [];
+  }
+  const entries = fs.readdirSync(directory, { withFileTypes: true });
+  return entries.filter((entry) => entry.isFile()).map((entry) => entry.name);
+}
+
+function getDropzoneTargets(dropzoneDir) {
+  const files = listFiles(dropzoneDir);
+  const textFiles = files.filter((file) => path.extname(file).toLowerCase() === ".txt");
+  return textFiles.map((file) => path.join(dropzoneDir, file));
 }
 
 function parseSongFile(rawContent) {
@@ -158,6 +175,28 @@ function detectArtwork(filePath, slug) {
   return containsMatch ? containsMatch.name : null;
 }
 
+function isQualifyingSong(parsed, songPayload) {
+  const title = normalizeValue(parsed?.title);
+  if (!title) {
+    return false;
+  }
+
+  const lyrics = normalizeValue(songPayload?.lyrics);
+  const artworkUrl = normalizeValue(songPayload?.artworkUrl);
+  const artworkFile = artworkUrl ? path.basename(artworkUrl) : "";
+  const slug = slugifyTitle(title);
+
+  if (lyrics) {
+    return true;
+  }
+
+  if (artworkFile && slug && path.parse(artworkFile).name.toLowerCase() === slug) {
+    return true;
+  }
+
+  return false;
+}
+
 function buildSongContentPayload(filePath, parsed, slug) {
   const artworkFile = detectArtwork(filePath, slug);
   const lyrics = normalizeValue(parsed.lyrics);
@@ -169,6 +208,11 @@ function buildSongContentPayload(filePath, parsed, slug) {
     songmeaning: songMeaning,
     artworkUrl: artworkFile ? path.join(path.dirname(filePath), artworkFile) : null
   };
+}
+
+function readSongFile(filePath) {
+  const rawContent = fs.readFileSync(filePath, "utf8");
+  return parseSongFile(rawContent);
 }
 
 function loadTestState() {
@@ -342,6 +386,81 @@ function parseArgs(argv) {
   return { command, fileArg, isDryRun };
 }
 
+async function ingestSongFile(filePath, { dryRun = false } = {}) {
+  let parsed;
+  try {
+    parsed = readSongFile(filePath);
+  } catch (error) {
+    console.error(error);
+    return {
+      status: "rejected",
+      reason: "missing_title",
+      songId: null,
+      filePath
+    };
+  }
+
+  if (!parsed.title) {
+    logMissingTitleDebug(filePath);
+    return {
+      status: "rejected",
+      reason: "missing_title",
+      songId: null,
+      writtenToDynamo: false,
+      filePath
+    };
+  }
+
+  const songId = slugifyTitle(parsed.title);
+  if (!songId) {
+    return {
+      status: "rejected",
+      reason: "missing_title",
+      songId: null,
+      writtenToDynamo: false,
+      filePath
+    };
+  }
+
+  const contentPayload = buildSongContentPayload(filePath, parsed, songId);
+  if (!isQualifyingSong(parsed, contentPayload)) {
+    return {
+      status: "skipped",
+      reason: "not_qualifying",
+      songId,
+      writtenToDynamo: false,
+      filePath
+    };
+  }
+
+  try {
+    const persisted = await persistSong({
+      songId,
+      title: parsed.title,
+      songMeaning: contentPayload.songMeaning,
+      songmeaning: contentPayload.songmeaning,
+      lyrics: contentPayload.lyrics,
+      lyricsPreview: contentPayload.lyricsPreview,
+      artworkUrl: contentPayload.artworkUrl
+    }, {
+      dryRun
+    });
+
+    return {
+      ...persisted,
+      filePath
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      reason: "dynamodb_write_failed",
+      songId,
+      writtenToDynamo: false,
+      filePath
+    };
+  }
+}
+
 async function persistSong(song, options = {}) {
   const dryRun = Boolean(options.dryRun);
   const contentHash = buildContentHash(song);
@@ -417,68 +536,59 @@ async function persistSong(song, options = {}) {
 function main() {
   return (async () => {
     const { command, fileArg, isDryRun } = parseArgs(process.argv);
+    const shouldScanDropzone = command === "ingest" && (!fileArg || fileArg === "-");
 
-    if (command !== "ingest" || !fileArg) {
-      process.stdout.write(helpText);
-      process.exit(0);
+    if (command !== "ingest" || shouldScanDropzone) {
+      const dropzoneDir = DEFAULT_DROPZONE_DIR;
+      const targets = shouldScanDropzone ? getDropzoneTargets(dropzoneDir) : [];
+
+      if (command !== "ingest") {
+        process.stdout.write(helpText);
+        process.exit(0);
+      }
+
+      if (!targets.length) {
+        printJson({
+          status: "processed",
+          mode: "dropzone",
+          scanned: 0,
+          queued: 0,
+          skipped: 0,
+          rejected: 0,
+          writtenToDynamo: false
+        });
+        return;
+      }
+
+      const results = [];
+      for (const target of targets) {
+        results.push(await ingestSongFile(target, { dryRun: isDryRun }));
+      }
+
+      const summary = {
+        status: "processed",
+        mode: "dropzone",
+        scanned: results.length,
+        queued: results.filter((result) => result.status === "processed" || result.status === "updated").length,
+        skipped: results.filter((result) => result.status === "skipped").length,
+        rejected: results.filter((result) => result.status === "rejected").length,
+        writtenToDynamo: results.some((result) => Boolean(result.writtenToDynamo))
+      };
+
+      printJson(summary);
+      return;
     }
 
     let filePath;
-    let parsed;
     try {
       filePath = path.resolve(process.cwd(), fileArg);
-      const rawContent = fs.readFileSync(filePath, "utf8");
-      parsed = parseSongFile(rawContent);
-    } catch (error) {
-      console.error(error);
-      printJson({
-        status: "rejected",
-        reason: "missing_title",
-        songId: null
-      });
-      return;
-    }
-
-    if (!parsed.title) {
-      logMissingTitleDebug(filePath);
-      printJson({
-        status: "rejected",
-        reason: "missing_title",
-        songId: null
-      });
-      return;
-    }
-
-    const songId = slugifyTitle(parsed.title);
-    if (!songId) {
-      printJson({
-        status: "rejected",
-        reason: "missing_title",
-        songId: null
-      });
-      return;
-    }
-
-    try {
-      const contentPayload = buildSongContentPayload(filePath, parsed, songId);
-      const persisted = await persistSong({
-        songId,
-        title: parsed.title,
-        songMeaning: contentPayload.songMeaning,
-        songmeaning: contentPayload.songmeaning,
-        lyrics: contentPayload.lyrics,
-        lyricsPreview: contentPayload.lyricsPreview,
-        artworkUrl: contentPayload.artworkUrl
-      }, {
-        dryRun: isDryRun
-      });
-
-      printJson(persisted);
+      const result = await ingestSongFile(filePath, { dryRun: isDryRun });
+      printJson(result);
     } catch (error) {
       printJson({
         status: "error",
         reason: "dynamodb_write_failed",
-        songId
+        songId: null
       });
     }
   })();
