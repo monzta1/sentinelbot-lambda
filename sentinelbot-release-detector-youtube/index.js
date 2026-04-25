@@ -525,11 +525,20 @@ function mergeDraftOntoSongItem(songItem, draft) {
     merged.lyricsSource = draft.lyricsSource || "shield-cli-dropzone";
     merged.lyricsConfidence = draft.lyricsConfidence || "high";
   }
-  if (draft.songMeaning) {
-    merged.songMeaning = draft.songMeaning;
+  // Shield-cli stores the meaning under lowercase `songmeaning`; the
+  // publisher reads camelCase `songMeaning`. Accept either input shape
+  // and always write canonical camelCase to the released record.
+  const draftMeaning = draft.songMeaning || draft.songmeaning;
+  if (draftMeaning) {
+    merged.songMeaning = draftMeaning;
   }
-  if (draft.artwork) {
-    merged.artwork = draft.artwork;
+  // Shield-cli stores the published CDN URL under `artworkUrl` and the
+  // raw source filename under `artwork`. Prefer the URL; fall back to
+  // `artwork` only if it looks like a URL (starts with http).
+  const draftArtworkUrl = draft.artworkUrl
+    || (typeof draft.artwork === "string" && /^https?:\/\//i.test(draft.artwork) ? draft.artwork : "");
+  if (draftArtworkUrl) {
+    merged.artwork = draftArtworkUrl;
   }
   if (draft.songId && draft.songId !== merged.songId) {
     merged.draftSongId = draft.songId;
