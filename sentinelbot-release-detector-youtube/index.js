@@ -394,6 +394,11 @@ function buildSongItem(video) {
     durationSeconds: Number(video.durationSeconds || 0),
     type: "official_release",
     source: "youtube",
+    // status + releaseDetected are what the publisher reads to bucket
+    // a song into released[]. Without them, the song is treated as a
+    // draft and never reaches homepage.featuredRelease.
+    status: "released",
+    releaseDetected: true,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -529,6 +534,10 @@ function mergeDraftOntoSongItem(songItem, draft) {
   if (draft.songId && draft.songId !== merged.songId) {
     merged.draftSongId = draft.songId;
   }
+  // The merged record represents a released song no matter what state
+  // the draft was in; explicitly stamp the released markers.
+  merged.status = "released";
+  merged.releaseDetected = true;
   return merged;
 }
 
