@@ -1,9 +1,10 @@
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
 
 const TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+const EVENT_STREAM_TABLE_NAME = process.env.EVENT_STREAM_TABLE_NAME || "EventStream";
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
 const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID || "";
@@ -396,16 +397,44 @@ function buildSongItem(video) {
 }
 
 function buildEventStreamItem(releaseEvent) {
-  const streamKey = `${releaseEvent.publishedAt}#${releaseEvent.source}#${releaseEvent.id}`;
-  const timestamp = nowIso();
+  const songId = String(releaseEvent.songId || releaseEvent.id || "").trim();
+  const timestamp = String(releaseEvent.timestamp || releaseEvent.publishedAt || nowIso()).trim();
+  const source = String(releaseEvent.source || "release-detector-youtube").trim();
+  const eventType = String(releaseEvent.eventType || "SONG_RELEASED").trim();
+  const streamKey = timestamp;
+  const lyrics = String(releaseEvent.lyrics || releaseEvent.songContextSummary || "").trim();
+  const artworkUrl = String(releaseEvent.artworkUrl || releaseEvent.sourceUrl || releaseEvent.youtubeUrl || "").trim();
+  const songMeaning = String(releaseEvent.songMeaning || releaseEvent.songContextMeaning || releaseEvent.songContextSummary || "").trim();
   return {
-    id: `${EVENT_STREAM_PK}#${streamKey}`,
-    traceId: releaseEvent.traceId || buildTraceId(releaseEvent.id),
-    pk: EVENT_STREAM_PK,
+    id: `${songId}#${streamKey}#${eventType}`,
+    songId,
+    title: String(releaseEvent.title || "").trim(),
+    youtubeUrl: String(releaseEvent.youtubeUrl || releaseEvent.sourceUrl || "").trim(),
+    sourceUrl: String(releaseEvent.sourceUrl || releaseEvent.youtubeUrl || "").trim(),
+    timestamp,
+    publishedAt: String(releaseEvent.publishedAt || timestamp).trim(),
+    stateAfter: String(releaseEvent.stateAfter || "released").trim(),
+    traceId: releaseEvent.traceId || buildTraceId(songId),
+    pk: songId,
     sk: streamKey,
-    eventType: releaseEvent.eventType,
-    source: releaseEvent.source,
-    payload: releaseEvent,
+    eventType,
+    source,
+    payload: {
+      id: songId,
+      songId,
+      title: String(releaseEvent.title || "").trim(),
+      youtubeUrl: String(releaseEvent.youtubeUrl || releaseEvent.sourceUrl || "").trim(),
+      sourceUrl: String(releaseEvent.sourceUrl || releaseEvent.youtubeUrl || "").trim(),
+      timestamp,
+      publishedAt: String(releaseEvent.publishedAt || timestamp).trim(),
+      stateAfter: String(releaseEvent.stateAfter || "released").trim(),
+      eventType,
+      source,
+      lyrics,
+      artworkUrl,
+      artwork: artworkUrl,
+      songMeaning
+    },
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -432,27 +461,125 @@ async function writeEventStream(releaseEvent) {
   const item = buildEventStreamItem(releaseEvent);
   try {
     await dynamo.send(new PutCommand({
-      TableName: TABLE_NAME,
+      TableName: EVENT_STREAM_TABLE_NAME,
       Item: item,
-      ConditionExpression: "attribute_not_exists(id)"
+      ConditionExpression: "attribute_not_exists(pk) AND attribute_not_exists(sk)"
     }));
     return { created: true, item };
   } catch (error) {
     if (error?.name === "ConditionalCheckFailedException") {
       return { created: false, item, duplicate: true };
     }
+    console.error(error);
     throw error;
   }
 }
 
+// Find a coming_soon song record (typically written by shield-cli from a
+// dropzone ingest) whose normalized title matches this YouTube release.
+// Returns the first match or null. Used to carry user-authored lyrics,
+// songMeaning, and artwork onto the new released record so the homepage
+// and song-meanings dossier render with the polished content the user
+// staged ahead of release.
+async function findDraftSongByTitle(normalizedTitleTarget) {
+  if (!normalizedTitleTarget) return null;
+  let exclusiveStartKey;
+  do {
+    const response = await dynamo.send(new ScanCommand({
+      TableName: SONGS_TABLE_NAME,
+      FilterExpression: "#status = :status",
+      ExpressionAttributeNames: { "#status": "status" },
+      ExpressionAttributeValues: { ":status": "coming_soon" },
+      ExclusiveStartKey: exclusiveStartKey,
+      Limit: 100
+    }));
+    for (const item of response?.Items || []) {
+      const candidate = normalizeSongTitle(item?.title || "");
+      const canonical = normalizeSongTitle(item?.canonicalTitle || "");
+      if (candidate === normalizedTitleTarget || canonical === normalizedTitleTarget) {
+        return item;
+      }
+    }
+    exclusiveStartKey = response?.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+  return null;
+}
+
+// Merge user-authored fields from a coming_soon draft onto the new
+// released record so YouTube release transitions inherit the polished
+// content. Draft fields win over auto-extracted ones for lyrics,
+// songMeaning, and artwork.
+function mergeDraftOntoSongItem(songItem, draft) {
+  if (!draft) return songItem;
+  const merged = { ...songItem };
+  if (draft.lyrics) {
+    merged.lyrics = draft.lyrics;
+    merged.lyricsSource = draft.lyricsSource || "shield-cli-dropzone";
+    merged.lyricsConfidence = draft.lyricsConfidence || "high";
+  }
+  if (draft.songMeaning) {
+    merged.songMeaning = draft.songMeaning;
+  }
+  if (draft.artwork) {
+    merged.artwork = draft.artwork;
+  }
+  if (draft.songId && draft.songId !== merged.songId) {
+    merged.draftSongId = draft.songId;
+  }
+  return merged;
+}
+
+async function deleteDraftSong(draftSongId) {
+  if (!draftSongId) return;
+  try {
+    await dynamo.send(new DeleteCommand({
+      TableName: SONGS_TABLE_NAME,
+      Key: { songId: draftSongId }
+    }));
+  } catch (error) {
+    logStage("draft-song-delete-failed", {
+      draftSongId,
+      error: error?.message || String(error)
+    });
+  }
+}
+
 async function writeSongItem(video) {
-  const item = buildSongItem(video);
+  let item = buildSongItem(video);
+
+  // Look up any matching coming_soon draft by normalized title and pull
+  // its user-authored fields onto the released record.
+  let draft = null;
+  try {
+    draft = await findDraftSongByTitle(item.normalizedCanonicalTitle || item.normalizedTitle || "");
+  } catch (error) {
+    logStage("draft-lookup-failed", {
+      videoId: video.videoId,
+      title: video.title,
+      error: error?.message || String(error)
+    });
+  }
+  if (draft) {
+    item = mergeDraftOntoSongItem(item, draft);
+    logStage("draft-merged-onto-release", {
+      videoId: video.videoId,
+      title: video.title,
+      draftSongId: draft.songId,
+      mergedLyrics: Boolean(draft.lyrics),
+      mergedSongMeaning: Boolean(draft.songMeaning),
+      mergedArtwork: Boolean(draft.artwork)
+    });
+  }
+
   try {
     await dynamo.send(new PutCommand({
       TableName: SONGS_TABLE_NAME,
       Item: item,
       ConditionExpression: "attribute_not_exists(songId)"
     }));
+    if (draft && draft.songId !== item.songId) {
+      await deleteDraftSong(draft.songId);
+    }
     return { created: true, item };
   } catch (error) {
     if (error?.name === "ConditionalCheckFailedException") {
@@ -571,9 +698,32 @@ exports.handler = async () => {
     for (const video of newVideos) {
       const result = await writeReleaseEvent(video);
       if (result.created) {
-        events.push(result.item);
         try {
           await writeSongItem(video);
+          events.push(result.item);
+          void writeEventStream({
+            eventType: "SONG_RELEASED",
+            songId: video.videoId,
+            title: video.title,
+            youtubeUrl: video.sourceUrl,
+            sourceUrl: video.sourceUrl,
+            timestamp: nowIso(),
+            publishedAt: video.publishedAt || nowIso(),
+            stateAfter: "released",
+            source: "release-detector-youtube",
+            traceId: buildTraceId(video.videoId),
+            lyrics: video.lyrics || "",
+            artworkUrl: video.sourceUrl || "",
+            artwork: video.sourceUrl || "",
+            songMeaning: video.songContextMeaning || video.songContextSummary || ""
+          }).catch((error) => {
+            logStage("song-release-eventstream-write-failed", {
+              traceId: buildTraceId(video.videoId),
+              videoId: video.videoId,
+              title: video.title,
+              error: error.message
+            });
+          });
         } catch (error) {
           logStage("song-table-write-failed", {
             traceId: buildTraceId(video.videoId),
@@ -582,7 +732,6 @@ exports.handler = async () => {
             error: error.message
           });
         }
-        await writeEventStream(result.item);
       } else if (result.duplicate) {
         duplicateCount += 1;
       }
