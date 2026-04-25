@@ -1522,7 +1522,8 @@ function isUpcomingQuestion(question) {
     "anything coming", "any new song", "any new track",
     "any upcoming", "any unreleased",
     "unreleased song", "future release",
-    "whats cooking", "what's cooking", "whats brewing", "what's brewing"
+    "whats cooking", "what's cooking", "whats brewing", "what's brewing",
+    "cooking up", "brewing up", "in the oven", "in the lab", "dropping soon"
   ];
   for (const phrase of phrases) {
     if (normalized.includes(phrase)) return true;
@@ -2915,12 +2916,54 @@ async function persistGeneratedLyricsToSongsTable(song, lyrics) {
   }
 }
 
+// Build a compact Signal Room system block from live coming_soon data.
+// Returned as its own system message with explicit override language so
+// Claude treats it as authoritative even when the user phrases the
+// question colloquially ("anything in the oven", "what's brewing").
+function buildSignalRoomSystemBlock(songs) {
+  if (!Array.isArray(songs) || songs.length === 0) return null;
+  const lines = [
+    "SIGNAL ROOM LIVE DATA (authoritative; OVERRIDES the 'Future release dates' / 'not in my system' guardrail for the songs listed below).",
+    "These songs are publicly visible at https://shieldbearerusa.com/signal-room.html right now. When asked about upcoming songs, what's being written, what's coming, what's brewing, what's in the studio, or any similar phrasing, share what's listed here. Do NOT say 'not in my system' for these specific titles.",
+    "Do not invent release dates. If asked about timing, say 'no release date set yet'.",
+    ""
+  ];
+  for (const song of songs) {
+    const title = String(song?.title || "").trim();
+    if (!title) continue;
+    lines.push(`Song in progress: ${title}`);
+    const meaning = String(song?.songmeaning || song?.songMeaning || "").trim();
+    const lyrics = String(song?.lyrics || "").trim();
+    if (meaning) {
+      const excerpt = meaning.length > 600 ? `${meaning.slice(0, 600)}...` : meaning;
+      lines.push(`Meaning: ${excerpt}`);
+    }
+    if (lyrics) {
+      const opening = lyrics.split("\n").slice(0, 8).map((s) => s.trim()).filter(Boolean).join("\n");
+      if (opening) {
+        lines.push("Lyrics opening:");
+        lines.push(opening);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trim();
+}
+
 async function callAnthropic(question, history, extraContext = null, options = {}) {
   const model = process.env.ANTHROPIC_FALLBACK_MODEL || "claude-haiku-4-5-20251001";
   const normalizedQuery = String(options.normalizedQuery || normalizeCacheQuestion(question));
   const traceId = options.traceId || null;
   const systemPrompt = await getSystemPromptProduction();
-  const systemSize = String(systemPrompt || "").length + String(extraContext || "").length;
+  // Signal Room data is fetched (cached) and added as its own system
+  // block so Claude can answer colloquial upcoming-release phrasings
+  // ("anything in the oven", "what's brewing") without the substring
+  // matcher needing every variant.
+  const upcomingSongs = await loadComingSoonSongs();
+  const signalRoomBlock = buildSignalRoomSystemBlock(upcomingSongs);
+  const systemSize = String(systemPrompt || "").length
+    + String(extraContext || "").length
+    + String(signalRoomBlock || "").length;
   const inputSize = String(question || "").length + systemSize + JSON.stringify(history || []).length;
   console.log(JSON.stringify({
     event: "anthropic-call-start",
@@ -2930,7 +2973,8 @@ async function callAnthropic(question, history, extraContext = null, options = {
     cacheHit: Boolean(options.cacheHit),
     model,
     inputSize,
-    estimatedInputTokens: Math.ceil(inputSize / 4)
+    estimatedInputTokens: Math.ceil(inputSize / 4),
+    signalRoomBlockChars: String(signalRoomBlock || "").length
   }));
 
   const systemBlocks = [
@@ -2942,6 +2986,12 @@ async function callAnthropic(question, history, extraContext = null, options = {
       }
     }
   ];
+  if (signalRoomBlock) {
+    systemBlocks.push({
+      type: "text",
+      text: signalRoomBlock
+    });
+  }
   if (extraContext) {
     systemBlocks.push({
       type: "text",
@@ -3082,12 +3132,17 @@ exports.handler = async (event) => {
     let lyricsConfidence = null;
     let responseModeValue = null;
 
-    const cachedAnswer = await findCachedAnswer(question);
+    // Signal Room intent runs BEFORE the cache check so colloquial
+    // upcoming-release questions ("what are you cooking up") don't get
+    // hijacked by identity-style cached answers that match on prefixes
+    // like "what are you".
+    const upcomingIntent = isUpcomingQuestion(question);
+    const cachedAnswer = upcomingIntent ? null : await findCachedAnswer(question);
     if (cachedAnswer) {
       answer = cachedAnswer;
       source = "app-cache-hit";
       lookupMode = "cache-hit";
-    } else if (isUpcomingQuestion(question)) {
+    } else if (upcomingIntent) {
       // Signal Room handler: pull coming_soon records and answer
       // deterministically from the data. Bypassing Claude here is
       // intentional: the heavy system prompt's "future release dates
