@@ -15,6 +15,7 @@ const TEST_STATE_FILE = process.env.SHIELD_CLI_DYNAMO_STATE_FILE || "";
 const DEFAULT_DROPZONE_DIR = process.env.SHIELD_CLI_DROPZONE_DIR || path.join(os.homedir(), "Shieldbearer", "dropzone");
 const DEFAULT_ARTWORK_PUBLIC_DIR = process.env.SHIELD_CLI_ARTWORK_PUBLIC_DIR || path.resolve(__dirname, "../../../../shieldbearer-website/images/signal-room");
 const DEFAULT_ARTWORK_PUBLIC_BASE_URL = process.env.SHIELD_CLI_ARTWORK_PUBLIC_BASE_URL || "https://shieldbearerusa.com";
+const DEFAULT_SITE_JSON_PATH = process.env.SHIELD_CLI_SITE_JSON_PATH || path.resolve(__dirname, "../../../../shieldbearer-website/site.json");
 
 const helpText = `Shield Ingest CLI
 
@@ -92,6 +93,111 @@ function publishArtwork(filePath, songId) {
 
   const baseUrl = String(DEFAULT_ARTWORK_PUBLIC_BASE_URL || "").replace(/\/+$/, "");
   return `${baseUrl}/images/signal-room/${fileName}`;
+}
+
+function writeSiteJsonSnapshot(snapshot) {
+  let siteJson = {};
+  try {
+    const raw = fs.readFileSync(DEFAULT_SITE_JSON_PATH, "utf8");
+    siteJson = JSON.parse(raw);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  siteJson.comingSoon = snapshot ? [{
+    title: snapshot.title || "",
+    lyrics: snapshot.lyrics || "",
+    teaserLyrics: "",
+    artwork: snapshot.artworkUrl || "",
+    songMeaning: snapshot.songMeaning || "",
+    status: "coming_soon"
+  }] : [];
+
+  const directory = path.dirname(DEFAULT_SITE_JSON_PATH);
+  fs.mkdirSync(directory, { recursive: true });
+  const tempPath = `${DEFAULT_SITE_JSON_PATH}.tmp`;
+  fs.writeFileSync(tempPath, `${JSON.stringify(siteJson, null, 2)}\n`);
+  fs.renameSync(tempPath, DEFAULT_SITE_JSON_PATH);
+}
+
+function runGit(args, cwd) {
+  return require("child_process").spawnSync("git", args, { cwd, encoding: "utf8" });
+}
+
+function autoPushWebsiteRepo(snapshot) {
+  if (process.env.SHIELD_CLI_AUTO_PUSH === "0") {
+    return { pushed: false, skipped: true, reason: "disabled" };
+  }
+  if (process.env.SHIELD_CLI_SITE_JSON_PATH) {
+    return { pushed: false, skipped: true, reason: "custom-site-json-path" };
+  }
+
+  const repoRoot = path.dirname(DEFAULT_SITE_JSON_PATH);
+  const revParse = runGit(["rev-parse", "--is-inside-work-tree"], repoRoot);
+  if (revParse.status !== 0) {
+    return { pushed: false, skipped: true, reason: "not-a-git-repo" };
+  }
+
+  const siteJsonRel = path.relative(repoRoot, DEFAULT_SITE_JSON_PATH);
+  const artworkRel = path.relative(repoRoot, DEFAULT_ARTWORK_PUBLIC_DIR);
+
+  // Stage deletions of previously-tracked .jpg files that no longer exist
+  const trackedJpgs = runGit(["ls-files", "--", `${artworkRel}/*.jpg`], repoRoot);
+  if (trackedJpgs.status === 0 && trackedJpgs.stdout) {
+    const deleted = trackedJpgs.stdout.split("\n").filter(Boolean).filter((rel) => !fs.existsSync(path.join(repoRoot, rel)));
+    if (deleted.length > 0) {
+      runGit(["rm", "--quiet", "--", ...deleted], repoRoot);
+    }
+  }
+
+  // Stage current .jpg files in the artwork directory (skip legacy .png / .webp)
+  if (fs.existsSync(DEFAULT_ARTWORK_PUBLIC_DIR)) {
+    const jpgs = fs.readdirSync(DEFAULT_ARTWORK_PUBLIC_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".jpg")
+      .map((entry) => path.join(artworkRel, entry.name));
+    if (jpgs.length > 0) {
+      runGit(["add", "--", ...jpgs], repoRoot);
+    }
+  }
+
+  runGit(["add", "--", siteJsonRel], repoRoot);
+
+  const diffCached = runGit(["diff", "--cached", "--quiet"], repoRoot);
+  if (diffCached.status === 0) {
+    return { pushed: false, skipped: true, reason: "no-changes" };
+  }
+
+  const message = snapshot
+    ? "Refresh Signal Room song data via shield ingest"
+    : "Clear Signal Room song data after empty dropzone ingest";
+  const commitResult = runGit(["commit", "-m", message], repoRoot);
+  if (commitResult.status !== 0) {
+    return { pushed: false, skipped: false, reason: "commit-failed", error: (commitResult.stderr || "").trim() };
+  }
+
+  const pushResult = runGit(["push"], repoRoot);
+  if (pushResult.status !== 0) {
+    return { pushed: false, skipped: false, reason: "push-failed", error: (pushResult.stderr || "").trim() };
+  }
+
+  return { pushed: true, message };
+}
+
+// Permanent backdrop assets in images/signal-room/ that ingest must
+// never delete. Adding to this set protects more files going forward.
+const RESERVED_ARTWORK_FILES = new Set(["desk.jpg"]);
+
+function cleanupPublishedArtwork(keepSongId) {
+  const directory = DEFAULT_ARTWORK_PUBLIC_DIR;
+  if (!fs.existsSync(directory)) return;
+  const keepName = keepSongId ? `${keepSongId}.jpg` : null;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    if (path.extname(entry.name).toLowerCase() !== ".jpg") continue;
+    if (RESERVED_ARTWORK_FILES.has(entry.name)) continue;
+    if (keepName && entry.name === keepName) continue;
+    fs.rmSync(path.join(directory, entry.name), { force: true });
+  }
 }
 
 function listFiles(directory) {
@@ -219,7 +325,21 @@ function detectArtwork(filePath, title, slug) {
     return (matchSlug && stem.includes(matchSlug)) || (matchTitle && stem.includes(matchTitle));
   });
 
-  return containsMatch ? containsMatch.name : null;
+  if (containsMatch) {
+    return containsMatch.name;
+  }
+
+  const textFileCount = entries.filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".txt").length;
+  if (textFileCount > 1) {
+    return null;
+  }
+
+  const anyImage = entries.find((entry) => {
+    if (!entry.isFile()) return false;
+    return supportedExtensions.has(path.parse(entry.name).ext.toLowerCase());
+  });
+
+  return anyImage ? anyImage.name : null;
 }
 
 function isQualifyingSong(parsed, songPayload) {
@@ -528,7 +648,14 @@ async function ingestSongFile(filePath, { dryRun = false } = {}) {
 
     return {
       ...persisted,
-      filePath
+      filePath,
+      snapshot: {
+        songId,
+        title: parsed.title,
+        lyrics: contentPayload.lyrics || "",
+        songMeaning: contentPayload.songMeaning || "",
+        artworkUrl: contentPayload.artworkUrl || ""
+      }
     };
   } catch (error) {
     console.error(error);
@@ -648,6 +775,12 @@ function main() {
       }
 
       if (!targets.length) {
+        let sitePush = null;
+        if (!isDryRun) {
+          writeSiteJsonSnapshot(null);
+          cleanupPublishedArtwork(null);
+          sitePush = autoPushWebsiteRepo(null);
+        }
         printJson({
           status: "processed",
           mode: "dropzone",
@@ -655,7 +788,8 @@ function main() {
           queued: 0,
           skipped: 0,
           rejected: 0,
-          writtenToDynamo: false
+          writtenToDynamo: false,
+          sitePush
         });
         return;
       }
@@ -665,6 +799,14 @@ function main() {
         results.push(await ingestSongFile(target, { dryRun: isDryRun }));
       }
 
+      let sitePush = null;
+      if (!isDryRun) {
+        const snapshot = results.find((result) => result?.snapshot)?.snapshot || null;
+        writeSiteJsonSnapshot(snapshot);
+        cleanupPublishedArtwork(snapshot?.artworkUrl ? snapshot.songId : null);
+        sitePush = autoPushWebsiteRepo(snapshot);
+      }
+
       const summary = {
         status: "processed",
         mode: "dropzone",
@@ -672,7 +814,8 @@ function main() {
         queued: results.filter((result) => result.status === "processed" || result.status === "updated").length,
         skipped: results.filter((result) => result.status === "skipped").length,
         rejected: results.filter((result) => result.status === "rejected").length,
-        writtenToDynamo: results.some((result) => Boolean(result.writtenToDynamo))
+        writtenToDynamo: results.some((result) => Boolean(result.writtenToDynamo)),
+        sitePush
       };
 
       printJson(summary);
@@ -683,6 +826,12 @@ function main() {
     try {
       filePath = path.resolve(process.cwd(), fileArg);
       const result = await ingestSongFile(filePath, { dryRun: isDryRun });
+      if (!isDryRun) {
+        const snapshot = result?.snapshot || null;
+        writeSiteJsonSnapshot(snapshot);
+        cleanupPublishedArtwork(snapshot?.artworkUrl ? snapshot.songId : null);
+        result.sitePush = autoPushWebsiteRepo(snapshot);
+      }
       printJson(result);
     } catch (error) {
       printJson({
