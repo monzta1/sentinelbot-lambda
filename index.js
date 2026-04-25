@@ -2656,6 +2656,54 @@ function getHeaderValue(headers, name) {
   return null;
 }
 
+// Per-IP rate limit. Cheap atomic counter on the existing logs table
+// keyed pk="ratelimit#<ip>" sk="<minute-bucket>". Blocks if a single IP
+// fires more than RATE_LIMIT_MAX questions in a 60-second window.
+// Cost: ~$0.001 per 1000 requests on DynamoDB writes. Items are tiny
+// (~80 bytes) and dwarfed by chat-log storage; no TTL needed at this
+// scale. Set SENTINEL_RATE_LIMIT_DISABLED=true to switch off.
+const RATE_LIMIT_MAX = Math.max(1, Number.parseInt(process.env.SENTINEL_RATE_LIMIT_MAX || "15", 10) || 15);
+const RATE_LIMIT_DISABLED = String(process.env.SENTINEL_RATE_LIMIT_DISABLED || "false").toLowerCase() === "true";
+
+function rateLimitMinuteBucket(date = new Date()) {
+  return date.toISOString().slice(0, 16) + "Z"; // e.g. 2026-04-25T20:30Z
+}
+
+async function checkAndIncrementRateLimit(sourceIp) {
+  if (RATE_LIMIT_DISABLED) return { blocked: false, count: 0 };
+  if (!sourceIp || sourceIp === "unknown") return { blocked: false, count: 0 };
+
+  const pk = `ratelimit#${sourceIp}`;
+  const sk = rateLimitMinuteBucket();
+
+  const tableName = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+  try {
+    const result = await dynamo.send(new UpdateCommand({
+      TableName: tableName,
+      Key: { id: `${pk}#${sk}` },
+      UpdateExpression: "ADD #c :one SET pk = :pk, sk = :sk, #ts = :ts",
+      ExpressionAttributeNames: { "#c": "count", "#ts": "updatedAt" },
+      ExpressionAttributeValues: {
+        ":one": 1,
+        ":pk": pk,
+        ":sk": sk,
+        ":ts": new Date().toISOString()
+      },
+      ReturnValues: "UPDATED_NEW"
+    }));
+    const count = Number(result?.Attributes?.count || 0);
+    return { blocked: count > RATE_LIMIT_MAX, count };
+  } catch (error) {
+    // Fail open: never block legitimate users due to a DynamoDB blip.
+    console.error(JSON.stringify({
+      stage: "rate-limit-check-failed",
+      error: error?.message || String(error),
+      sourceIp
+    }));
+    return { blocked: false, count: 0, error: true };
+  }
+}
+
 function getRequestMetadata(event) {
   const headers = event?.headers || {};
   const sourceIp =
@@ -3094,6 +3142,30 @@ exports.handler = async (event) => {
     const historyLength = Array.isArray(history) ? history.length : 0;
     const repeat = markRepeat(question);
     let traceId = null;
+
+    // Per-IP rate limit. Blocks before the expensive Claude call so an
+    // abusive client can't run up the bill. Returns 429 with a friendly
+    // message that fits the SentinelBot voice.
+    const rateCheck = await checkAndIncrementRateLimit(requestMetadata.sourceIp);
+    if (rateCheck.blocked) {
+      const responseTimeMs = Date.now() - startedAt;
+      console.warn(JSON.stringify({
+        stage: "rate-limit-blocked",
+        sourceIp: requestMetadata.sourceIp,
+        count: rateCheck.count,
+        limit: RATE_LIMIT_MAX
+      }));
+      return {
+        statusCode: 429,
+        headers: { ...headers, "Retry-After": "60" },
+        body: JSON.stringify({
+          answer: "Too many signals from this post. Slow down and try again in a minute.",
+          status: "rate_limited",
+          source: "rate-limit",
+          responseTimeMs
+        })
+      };
+    }
 
     if (!question) {
       const responseTimeMs = Date.now() - startedAt;
