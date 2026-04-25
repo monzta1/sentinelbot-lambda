@@ -1506,42 +1506,40 @@ function isReleaseQuestion(question) {
 function isUpcomingQuestion(question) {
   const normalized = normalizeQuestion(question);
   if (!normalized) return false;
+
+  // Tier 1: high-precision idioms and phrases that almost always mean
+  // "what's in progress / what's coming". Substring match.
   const phrases = [
-    "signal room",
-    "coming up",
-    "coming soon",
-    "upcoming",
-    "up and coming",
-    "up coming",
-    "next release",
-    "next song",
-    "next single",
-    "next track",
-    "whats next",
-    "what's next",
-    "what is next",
-    "in the works",
-    "being written",
-    "in progress",
-    "in the pipeline",
-    "in the queue",
-    "what are you working on",
-    "what is being written",
-    "anything new",
-    "whats new",
-    "what's new",
-    "anything coming",
-    "any new song",
-    "any new track",
-    "any upcoming",
-    "any unreleased",
-    "unreleased song",
-    "next drop",
-    "future release"
+    "signal room", "coming up", "coming soon", "upcoming",
+    "up and coming", "up coming",
+    "next release", "next song", "next single", "next track", "next drop",
+    "whats next", "what's next", "what is next",
+    "in the works", "being written", "in progress",
+    "in the pipeline", "in the queue", "in the studio",
+    "what are you working on", "what is being written",
+    "writing now", "currently writing",
+    "anything new", "whats new", "what's new",
+    "anything coming", "any new song", "any new track",
+    "any upcoming", "any unreleased",
+    "unreleased song", "future release",
+    "whats cooking", "what's cooking", "whats brewing", "what's brewing"
   ];
   for (const phrase of phrases) {
     if (normalized.includes(phrase)) return true;
   }
+
+  // Tier 2: word combinations. Catches phrasings like "whats the new
+  // release coming" or "any track you are working on next" without
+  // needing every variant in the phrase list.
+  const hasFutureWord = /\b(coming|upcoming|next|soon|future|brewing|cooking|new|upcomming)\b/.test(normalized);
+  const hasReleaseWord = /\b(release|song|track|single|drop|tune|music|album|ep|sing)\b/.test(normalized);
+  const hasWorkWord = /\b(work|working|writing|written|brew|making|made|cook|cooking)\b/.test(normalized);
+
+  // "new release" / "next track" / "coming song" / etc.
+  if (hasFutureWord && hasReleaseWord) return true;
+  // "what are you working on" / "currently writing" / etc.
+  if (hasWorkWord && /\b(now|currently|these days|lately|right now|on)\b/.test(normalized)) return true;
+
   return false;
 }
 
