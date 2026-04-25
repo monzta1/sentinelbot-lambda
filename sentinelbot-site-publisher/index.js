@@ -363,16 +363,23 @@ function normalizeSongTableItem(item) {
   const status = normalizeStateName(item.status) || (item.releaseDetected ? "released" : "draft");
 
   // Lyrics + meaning may live under either shield-cli field names
-  // (lyrics, songMeaning) or release-detector field names
-  // (songContextMeaning/Summary). Prefer the user-authored fields.
+  // (lyrics, songmeaning lowercase) or release-detector field names
+  // (songMeaning camelCase, songContextMeaning/Summary). Accept all and
+  // emit canonical camelCase.
   const lyrics = String(item.lyrics || "").trim();
   const songMeaning = String(
     item.songMeaning ||
+    item.songmeaning ||
     item.songContextMeaning ||
     item.songContextSummary ||
     ""
   ).trim();
-  const artwork = String(item.artwork || item.artworkUrl || "").trim();
+  // Shield-cli writes the source filename into `artwork` and the
+  // published CDN URL into `artworkUrl`. Prefer the URL; fall back to
+  // `artwork` only if it actually looks like a URL.
+  const rawArtwork = String(item.artwork || "").trim();
+  const artwork = String(item.artworkUrl || "").trim()
+    || (/^https?:\/\//i.test(rawArtwork) ? rawArtwork : "");
 
   return {
     songId,
@@ -412,7 +419,13 @@ function compareReleaseSongsDesc(a, b) {
 }
 
 function buildSongView(song, latestEvent = null) {
-  const state = normalizeStateName(latestEvent?.stateAfter || song?.state) || "draft";
+  // The songs table is the source of truth for state. Prefer it over
+  // the latest event's stateAfter — events get a synthesized "draft"
+  // tag for SONG_UPDATED events from shield-cli, which would
+  // incorrectly demote a released record.
+  const state = normalizeStateName(song?.state)
+    || normalizeStateName(latestEvent?.stateAfter)
+    || "draft";
   const eventPayload = latestEvent?.payload || {};
   // Pull lyrics/songMeaning/artwork from event payload first (freshest),
   // then song table. The website needs all three to render homepage and
@@ -602,24 +615,20 @@ async function loadSongsTableItems() {
 }
 
 async function loadEventStreamPage(exclusiveStartKey) {
+  // EventStream items use pk = songId (not a constant), so we cannot
+  // Query by a fixed pk. Scan instead. Cheap at current scale (~tens
+  // of items); switch to a GSI on a constant attribute if the table
+  // grows past a few thousand events.
   const input = {
     TableName: EVENT_STREAM_TABLE_NAME,
-    KeyConditionExpression: "#pk = :pk",
-    ExpressionAttributeNames: {
-      "#pk": "pk"
-    },
-    ExpressionAttributeValues: {
-      ":pk": EVENT_STREAM_PK
-    },
-    Limit: EVENT_STREAM_PAGE_SIZE,
-    ScanIndexForward: false
+    Limit: EVENT_STREAM_PAGE_SIZE
   };
 
   if (exclusiveStartKey) {
     input.ExclusiveStartKey = exclusiveStartKey;
   }
 
-  return dynamo.send(new QueryCommand(input));
+  return dynamo.send(new ScanCommand(input));
 }
 
 async function loadEventStreamItems() {
@@ -777,9 +786,29 @@ exports.handler = async (event = {}) => {
   const startedAt = Date.now();
 
   try {
-    const eventStreamItems = await loadEventStreamItems();
-    const siteArtifact = buildSiteArtifactFromEvents(eventStreamItems);
-    const latestReleaseSource = eventStreamItems[0]?.source || "youtube";
+    // Load both events and songs and pass them to the artifact builder
+    // in the expected destructured shape. The previous implementation
+    // passed a plain array to a function that expects {events, songs},
+    // so songs were never read and the artifact was always empty.
+    const [eventStreamItems, songItems] = await Promise.all([
+      loadEventStreamItems(),
+      loadSongsTableItems()
+    ]);
+    const siteArtifact = buildSiteArtifactFromEvents({
+      events: eventStreamItems,
+      songs: songItems
+    });
+    // Prefer the source the caller passed (lets EventBridge target pass
+    // source: "youtube" explicitly). Fall back to the freshest
+    // SONG_RELEASED event in the stream, then to the latest event of
+    // any kind, then to "youtube" as the final default.
+    const latestReleasedEvent = eventStreamItems.find(
+      (item) => String(item?.eventType || "").toUpperCase() === "SONG_RELEASED"
+    );
+    const latestReleaseSource = event.source
+      || latestReleasedEvent?.source
+      || eventStreamItems[0]?.source
+      || "youtube";
     const releaseId = getArtifactReleaseId(siteArtifact);
     const source = getArtifactSource(siteArtifact, {
       source: latestReleaseSource
