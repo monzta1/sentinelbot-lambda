@@ -1,7 +1,10 @@
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, DeleteCommand, GetCommand, PutCommand, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
+const sns = new SNSClient({ region: "us-east-1" });
+const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN || "";
 
 const TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
 const EVENT_STREAM_TABLE_NAME = process.env.EVENT_STREAM_TABLE_NAME || "EventStream";
@@ -529,6 +532,49 @@ function mergeDraftOntoSongItem(songItem, draft) {
   return merged;
 }
 
+// Send a heartbeat email summarizing the scan. Configured via env var
+// SNS_TOPIC_ARN. Always best-effort: a publish failure must never break
+// the scan flow.
+async function publishScanSummary(payload) {
+  if (!SNS_TOPIC_ARN) return;
+  const ok = payload.status === "ok";
+  const lines = [];
+  lines.push(ok ? "Scan completed." : "Scan FAILED.");
+  lines.push(`Time (UTC): ${payload.timestamp || nowIso()}`);
+  if (ok) {
+    lines.push(`Videos scanned: ${payload.scannedCount || 0}`);
+    lines.push(`New release candidates: ${payload.detectedCount || 0}`);
+    lines.push(`Events created: ${payload.createdCount || 0}`);
+    if (payload.duplicateCount) lines.push(`Duplicates skipped: ${payload.duplicateCount}`);
+    if (Array.isArray(payload.detectedTitles) && payload.detectedTitles.length) {
+      lines.push("");
+      lines.push("New releases detected:");
+      for (const title of payload.detectedTitles) lines.push(`  - ${title}`);
+    } else {
+      lines.push("");
+      lines.push("No new releases this run.");
+    }
+  } else {
+    lines.push(`Error: ${payload.error || "unknown"}`);
+  }
+  lines.push("");
+  lines.push(`Elapsed: ${payload.elapsedMs || 0}ms`);
+
+  const subject = ok
+    ? `[SentinelBot] Weekly YouTube scan: ${payload.detectedCount || 0} new`
+    : "[SentinelBot] Weekly YouTube scan FAILED";
+
+  try {
+    await sns.send(new PublishCommand({
+      TopicArn: SNS_TOPIC_ARN,
+      Subject: subject.slice(0, 100),
+      Message: lines.join("\n")
+    }));
+  } catch (error) {
+    logStage("sns-publish-failed", { error: error?.message || String(error) });
+  }
+}
+
 async function deleteDraftSong(draftSongId) {
   if (!draftSongId) return;
   try {
@@ -601,9 +647,21 @@ async function updateWatcherState({
   const newestVideoId = newestVideo?.videoId || lastKnownVideoId || null;
   const newestPublishedAt = newestVideo?.publishedAt || lastKnownPublishedAt || null;
 
+  // Several attribute names here are DynamoDB reserved words (`source`,
+  // `processed`). Alias every field via ExpressionAttributeNames to be
+  // safe against future renames hitting another reserved word.
   const expressionNames = {
     "#pk": "pk",
-    "#sk": "sk"
+    "#sk": "sk",
+    "#source": "source",
+    "#playlistId": "playlistId",
+    "#latestVideoId": "latestVideoId",
+    "#latestPublishedAt": "latestPublishedAt",
+    "#lastProcessedAt": "lastProcessedAt",
+    "#scannedCount": "scannedCount",
+    "#newEventCount": "newEventCount",
+    "#processed": "processed",
+    "#updatedAt": "updatedAt"
   };
 
   const expressionValues = {
@@ -623,15 +681,15 @@ async function updateWatcherState({
   const updateExpression = [
     "SET #pk = :pk",
     "#sk = :sk",
-    "source = :source",
-    "playlistId = :playlistId",
-    "latestVideoId = :latestVideoId",
-    "latestPublishedAt = :latestPublishedAt",
-    "lastProcessedAt = :lastProcessedAt",
-    "scannedCount = :scannedCount",
-    "newEventCount = :newEventCount",
-    "processed = :processed",
-    "updatedAt = :updatedAt"
+    "#source = :source",
+    "#playlistId = :playlistId",
+    "#latestVideoId = :latestVideoId",
+    "#latestPublishedAt = :latestPublishedAt",
+    "#lastProcessedAt = :lastProcessedAt",
+    "#scannedCount = :scannedCount",
+    "#newEventCount = :newEventCount",
+    "#processed = :processed",
+    "#updatedAt = :updatedAt"
   ].join(", ");
 
   await dynamo.send(new UpdateCommand({
@@ -747,6 +805,7 @@ exports.handler = async () => {
       lastKnownPublishedAt: lastSeenPublishedAt
     });
 
+    const elapsedMs = Date.now() - startedAt;
     logStage("youtube-release-scan-complete", {
       timestamp: requestTimestamp,
       traceIds: events.map((event) => event.traceId || null).filter(Boolean),
@@ -756,7 +815,18 @@ exports.handler = async () => {
       duplicateCount,
       newestVideoId: newestVideo?.videoId || null,
       newestPublishedAt: newestVideo?.publishedAt || null,
-      elapsedMs: Date.now() - startedAt
+      elapsedMs
+    });
+
+    await publishScanSummary({
+      status: "ok",
+      timestamp: requestTimestamp,
+      scannedCount: enrichedVideos.length,
+      detectedCount: newVideos.length,
+      createdCount: events.length,
+      duplicateCount,
+      detectedTitles: newVideos.map((video) => video.title).filter(Boolean),
+      elapsedMs
     });
 
     return {
@@ -773,11 +843,19 @@ exports.handler = async () => {
       })
     };
   } catch (error) {
+    const elapsedMs = Date.now() - startedAt;
     logStage("youtube-release-scan-failed", {
       timestamp: requestTimestamp,
       error: error.message,
       traceId: null,
-      elapsedMs: Date.now() - startedAt
+      elapsedMs
+    });
+
+    await publishScanSummary({
+      status: "failed",
+      timestamp: requestTimestamp,
+      error: error.message,
+      elapsedMs
     });
 
     return {
