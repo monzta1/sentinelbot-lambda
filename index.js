@@ -4,8 +4,8 @@ const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 const eventsApi = require("./api/events");
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const EVENT_STREAM_TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
+const EVENT_STREAM_TABLE_NAME = process.env.EVENT_STREAM_TABLE_NAME || "EventStream";
 const SITE_JSON_PATH = path.join(__dirname, "docs", "site.json");
 const SONG_INDEX_PATH = path.join(__dirname, "docs", "song-index.json");
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
@@ -378,7 +378,7 @@ function normalizeSongEventRecord(item) {
     return null;
   }
 
-  const timestamp = String(item.timestamp || payload?.timestamp || payload?.publishedAt || item.createdAt || item.updatedAt || "").trim();
+  const timestamp = String(item.timestamp || item.sk || payload?.timestamp || payload?.publishedAt || item.createdAt || item.updatedAt || "").trim();
   const data = {
     title: String(item.title || payload?.title || "").trim(),
     source: String(item.source || payload?.source || "").trim(),
@@ -386,7 +386,10 @@ function normalizeSongEventRecord(item) {
     sourceUrl: String(item.sourceUrl || payload?.sourceUrl || payload?.youtubeUrl || "").trim(),
     contentHash: String(item.contentHash || payload?.contentHash || "").trim(),
     stateAfter: String(item.stateAfter || payload?.stateAfter || "").trim(),
-    publishedAt: String(item.publishedAt || payload?.publishedAt || "").trim()
+    publishedAt: String(item.publishedAt || payload?.publishedAt || "").trim(),
+    lyrics: String(item.lyrics || payload?.lyrics || "").trim(),
+    artworkUrl: String(item.artworkUrl || payload?.artworkUrl || "").trim(),
+    songMeaning: String(item.songMeaning || payload?.songMeaning || "").trim()
   };
 
   return {
@@ -442,7 +445,7 @@ function normalizeEventStreamApiRecord(item) {
   const payload = item.payload && typeof item.payload === "object" ? item.payload : null;
   const eventType = String(item.eventType || payload?.eventType || "").trim().toUpperCase();
   const songId = String(item.songId || payload?.songId || payload?.id || "").trim();
-  const timestamp = String(item.timestamp || payload?.timestamp || payload?.publishedAt || item.createdAt || item.updatedAt || "").trim();
+  const timestamp = String(item.timestamp || item.sk || payload?.timestamp || payload?.publishedAt || item.createdAt || item.updatedAt || "").trim();
   const id = String(item.id || payload?.id || "").trim();
 
   if (!eventType || !songId || !timestamp) {
@@ -509,32 +512,32 @@ async function fetchEventStreamEvents(since = "") {
   const cleanSince = String(since || "").trim();
   const sinceTime = cleanSince ? Date.parse(cleanSince) : NaN;
   const hasValidSince = Number.isFinite(sinceTime);
+  const expressionAttributeNames = {
+    "#timestamp": "timestamp",
+    "#source": "source"
+  };
   const queryOptions = {
     TableName: EVENT_STREAM_TABLE_NAME,
-    KeyConditionExpression: "#pk = :pk",
-    ExpressionAttributeNames: {
-      "#pk": "pk",
-      "#sk": "sk"
-    },
-    ExpressionAttributeValues: {
-      ":pk": "eventstream"
-    },
-    ScanIndexForward: true
+    ExpressionAttributeNames: expressionAttributeNames,
+    ExclusiveStartKey: undefined
   };
 
   if (hasValidSince) {
-    queryOptions.KeyConditionExpression = "#pk = :pk AND #sk > :sinceKey";
-    queryOptions.ExpressionAttributeValues[":sinceKey"] = `${cleanSince}#\uffff`;
+    expressionAttributeNames["#sk"] = "sk";
+    queryOptions.FilterExpression = "#sk > :sinceKey";
+    queryOptions.ExpressionAttributeValues = {
+      ":sinceKey": cleanSince
+    };
   }
 
   const records = [];
   let exclusiveStartKey = null;
 
   do {
-    const response = await dynamo.send(new QueryCommand({
+    const response = await dynamo.send(new ScanCommand({
       ...queryOptions,
       ExclusiveStartKey: exclusiveStartKey || undefined,
-      ProjectionExpression: "id, songId, eventType, title, timestamp, source, sourceUrl, youtubeUrl, contentHash, stateAfter, traceId, payload, createdAt, updatedAt, pk, sk"
+      ProjectionExpression: "id, songId, eventType, title, #timestamp, #source, sourceUrl, youtubeUrl, contentHash, stateAfter, traceId, payload, createdAt, updatedAt, pk, sk"
     }));
 
     for (const item of response?.Items || []) {
@@ -1077,21 +1080,22 @@ async function loadSongLifecycleFromEventStream(songId, fallbackSong = null) {
     const response = await dynamo.send(new QueryCommand({
       TableName: EVENT_STREAM_TABLE_NAME,
       KeyConditionExpression: "#pk = :pk",
-      FilterExpression: "#songId = :songId AND #eventType IN (:created, :updated, :released)",
+      FilterExpression: "#eventType IN (:created, :updated, :released)",
       ExpressionAttributeNames: {
         "#pk": "pk",
-        "#songId": "songId",
-        "#eventType": "eventType"
+        "#eventType": "eventType",
+        "#timestamp": "timestamp",
+        "#sk": "sk"
       },
       ExpressionAttributeValues: {
-        ":pk": "eventstream",
-        ":songId": cleanSongId,
+        ":pk": cleanSongId,
         ":created": "SONG_CREATED",
         ":updated": "SONG_UPDATED",
         ":released": "SONG_RELEASED"
       },
       ExclusiveStartKey: exclusiveStartKey || undefined,
-      ScanIndexForward: true
+      ScanIndexForward: true,
+      ProjectionExpression: "id, songId, eventType, title, #timestamp, source, sourceUrl, youtubeUrl, contentHash, stateAfter, traceId, payload, createdAt, updatedAt, pk, sk"
     }));
 
     for (const item of response?.Items || []) {
@@ -1493,6 +1497,127 @@ function isReleaseQuestion(question) {
     normalized.includes("release date") ||
     normalized.includes("released") ||
     normalized.includes("come out");
+}
+
+// Detects questions about songs in progress (Signal Room state). When
+// these match, SentinelBot loads coming_soon records from the songs
+// table and includes them as Claude context, so visitors get accurate
+// answers about upcoming releases without anyone updating the prompt.
+function isUpcomingQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  if (!normalized) return false;
+  const phrases = [
+    "signal room",
+    "coming up",
+    "coming soon",
+    "upcoming",
+    "next release",
+    "next song",
+    "next single",
+    "next track",
+    "in the works",
+    "being written",
+    "in progress",
+    "what are you working on",
+    "what is being written",
+    "anything new",
+    "whats new",
+    "what's new",
+    "anything coming",
+    "any new song"
+  ];
+  for (const phrase of phrases) {
+    if (normalized.includes(phrase)) return true;
+  }
+  return false;
+}
+
+// In-memory TTL cache so rapid-fire questions don't re-scan DynamoDB
+// on every invocation. 60s window is fine: shield-cli ingest events
+// are infrequent and cold starts naturally invalidate.
+let comingSoonCache = { items: null, fetchedAt: 0 };
+const COMING_SOON_TTL_MS = 60 * 1000;
+
+async function loadComingSoonSongs() {
+  const now = Date.now();
+  if (comingSoonCache.items && (now - comingSoonCache.fetchedAt) < COMING_SOON_TTL_MS) {
+    return comingSoonCache.items;
+  }
+  // DynamoDB Scan + FilterExpression: Limit caps items SCANNED before
+  // filtering, not items returned. Paginate until LastEvaluatedKey is
+  // absent so we never miss matches at the back of the table.
+  // Hard ceiling at 1000 scanned items to stay frugal.
+  const items = [];
+  let exclusiveStartKey;
+  let scanned = 0;
+  try {
+    do {
+      const response = await dynamo.send(new ScanCommand({
+        TableName: SONGS_TABLE_NAME,
+        FilterExpression: "#status = :status",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: { ":status": "coming_soon" },
+        ExclusiveStartKey: exclusiveStartKey
+      }));
+      if (Array.isArray(response?.Items)) items.push(...response.Items);
+      exclusiveStartKey = response?.LastEvaluatedKey;
+      scanned += response?.ScannedCount || 0;
+      if (scanned >= 1000) break;
+    } while (exclusiveStartKey);
+    comingSoonCache = { items, fetchedAt: now };
+    return items;
+  } catch (error) {
+    console.error(JSON.stringify({
+      stage: "loadComingSoonSongs-failed",
+      error: error?.message || String(error)
+    }));
+    comingSoonCache = { items: [], fetchedAt: now };
+    return [];
+  }
+}
+
+// Deterministic, in-voice answer for "what's in the Signal Room"
+// questions. Pulled together from live coming_soon records so visitors
+// always see what's actually in progress. Voice: direct, no fluff,
+// matches the SentinelBot tone in the rest of the prompt.
+function buildSignalRoomAnswer(songs) {
+  const link = '<a href="https://shieldbearerusa.com/signal-room.html" target="_blank">Signal Room</a>';
+  if (!Array.isArray(songs) || songs.length === 0) {
+    return [
+      "The Signal Room is between songs right now.",
+      "Watch the writing desk. The next one will appear there as it is written.",
+      `Catch the signal: ${link}`
+    ].join("\n");
+  }
+
+  const blocks = [];
+  for (const song of songs) {
+    const title = String(song?.title || "").trim();
+    if (!title) continue;
+    const meaning = String(song?.songmeaning || song?.songMeaning || "").trim();
+    const lyrics = String(song?.lyrics || "").trim();
+
+    const lines = [];
+    lines.push(`In the Signal Room: ${title}.`);
+
+    if (meaning) {
+      const firstSentence = meaning.split(/(?<=[.!?])\s+/)[0] || meaning.slice(0, 200);
+      lines.push(firstSentence.trim());
+    }
+
+    if (lyrics) {
+      const opening = lyrics.split("\n").slice(0, 4).map((line) => line.trim()).filter(Boolean).join("\n");
+      if (opening) {
+        lines.push("");
+        lines.push(opening);
+      }
+    }
+
+    blocks.push(lines.join("\n"));
+  }
+
+  blocks.push(`Watch the desk: ${link}. No release date set yet. The work decides when it is ready.`);
+  return blocks.join("\n\n");
 }
 
 function isSongMeaningQuestion(question) {
@@ -2951,6 +3076,17 @@ exports.handler = async (event) => {
       answer = cachedAnswer;
       source = "app-cache-hit";
       lookupMode = "cache-hit";
+    } else if (isUpcomingQuestion(question)) {
+      // Signal Room handler: pull coming_soon records and answer
+      // deterministically from the data. Bypassing Claude here is
+      // intentional: the heavy system prompt's "future release dates
+      // not in my system" guardrail dominated extra-context overrides,
+      // so we hand-craft a tight reply in the SentinelBot voice that
+      // always reflects the live Signal Room state.
+      const upcoming = await loadComingSoonSongs();
+      answer = buildSignalRoomAnswer(upcoming);
+      source = upcoming.length > 0 ? "deterministic-signal-room" : "deterministic-signal-room-empty";
+      lookupMode = upcoming.length > 0 ? "signal-room" : "signal-room-empty";
     } else {
       const songIntent = classifySongIntent(question);
       const responseMode = songIntent ? getResponseMode(songIntent) : null;
