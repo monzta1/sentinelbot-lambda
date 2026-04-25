@@ -550,27 +550,27 @@ function mergeDraftOntoSongItem(songItem, draft) {
   return merged;
 }
 
-// Send a heartbeat email summarizing the scan. Configured via env var
-// SNS_TOPIC_ARN. Always best-effort: a publish failure must never break
-// the scan flow.
+// Email a scan summary. Sends only on signal: when a real release is
+// detected (createdCount > 0) or when the scan fails. Suppresses
+// hourly "nothing happened" noise so the inbox stays quiet on most
+// Friday runs and the user only hears when it matters.
 async function publishScanSummary(payload) {
   if (!SNS_TOPIC_ARN) return;
   const ok = payload.status === "ok";
+  const createdCount = payload.createdCount || 0;
+  if (ok && createdCount === 0) return;
+
   const lines = [];
-  lines.push(ok ? "Scan completed." : "Scan FAILED.");
+  lines.push(ok ? "Release detected." : "Scan FAILED.");
   lines.push(`Time (UTC): ${payload.timestamp || nowIso()}`);
   if (ok) {
     lines.push(`Videos scanned: ${payload.scannedCount || 0}`);
-    lines.push(`New release candidates: ${payload.detectedCount || 0}`);
-    lines.push(`Events created: ${payload.createdCount || 0}`);
+    lines.push(`Events created: ${createdCount}`);
     if (payload.duplicateCount) lines.push(`Duplicates skipped: ${payload.duplicateCount}`);
     if (Array.isArray(payload.detectedTitles) && payload.detectedTitles.length) {
       lines.push("");
-      lines.push("New releases detected:");
+      lines.push("New releases:");
       for (const title of payload.detectedTitles) lines.push(`  - ${title}`);
-    } else {
-      lines.push("");
-      lines.push("No new releases this run.");
     }
   } else {
     lines.push(`Error: ${payload.error || "unknown"}`);
@@ -579,8 +579,8 @@ async function publishScanSummary(payload) {
   lines.push(`Elapsed: ${payload.elapsedMs || 0}ms`);
 
   const subject = ok
-    ? `[SentinelBot] Weekly YouTube scan: ${payload.detectedCount || 0} new`
-    : "[SentinelBot] Weekly YouTube scan FAILED";
+    ? `[SentinelBot] Release detected (${createdCount})`
+    : "[SentinelBot] YouTube scan FAILED";
 
   try {
     await sns.send(new PublishCommand({
