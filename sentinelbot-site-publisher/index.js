@@ -5,6 +5,7 @@ const { DynamoDBDocumentClient, QueryCommand, ScanCommand } = require("@aws-sdk/
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
+const EVENT_STREAM_TABLE_NAME = process.env.EVENT_STREAM_TABLE_NAME || "EventStream";
 const SONGS_TABLE_NAME = process.env.SONGS_TABLE_NAME || "shieldbearer-songs";
 const DRY_RUN = String(process.env.DRY_RUN || "true").toLowerCase() !== "false";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN || "";
@@ -263,6 +264,10 @@ function buildEmptySiteArtifact() {
         sourceUrl: "",
         activeReleaseId: ""
       },
+      // featuredRelease is what the homepage reads to render the
+      // top-of-page release card (artwork, title, video, lyrics blurb,
+      // song meaning). Populated from the latest released song.
+      featuredRelease: null,
       lastUpdatedAt: ""
     },
     release: {
@@ -273,12 +278,16 @@ function buildEmptySiteArtifact() {
     },
     releaseIndex: {},
     signal: [],
-    incoming: [],
+    // comingSoon is the field the website reads (signal-room, etc.).
+    // Kept for compatibility with existing renderers.
+    comingSoon: [],
     released: [],
     signalCount: 0,
     comingSoonCount: 0,
     releasedCount: 0,
-    eventsStream: []
+    // events is the field the website reads (timeline page). Kept
+    // singular and short-named for compatibility.
+    events: []
   };
 }
 
@@ -353,6 +362,18 @@ function normalizeSongTableItem(item) {
 
   const status = normalizeStateName(item.status) || (item.releaseDetected ? "released" : "draft");
 
+  // Lyrics + meaning may live under either shield-cli field names
+  // (lyrics, songMeaning) or release-detector field names
+  // (songContextMeaning/Summary). Prefer the user-authored fields.
+  const lyrics = String(item.lyrics || "").trim();
+  const songMeaning = String(
+    item.songMeaning ||
+    item.songContextMeaning ||
+    item.songContextSummary ||
+    ""
+  ).trim();
+  const artwork = String(item.artwork || item.artworkUrl || "").trim();
+
   return {
     songId,
     title: String(item.title || "").trim(),
@@ -360,7 +381,9 @@ function normalizeSongTableItem(item) {
     traceId: String(item.traceId || "").trim(),
     publishedAt: String(item.publishedAt || "").trim(),
     sourceUrl: String(item.youtubeUrl || item.sourceUrl || "").trim(),
-    artwork: String(item.artwork || "").trim(),
+    artwork,
+    lyrics,
+    songMeaning,
     updatedAt: String(item.updatedAt || item.createdAt || item.publishedAt || "").trim(),
     contentHash: String(item.contentHash || "").trim(),
     releaseDetected: Boolean(item.releaseDetected),
@@ -390,6 +413,23 @@ function compareReleaseSongsDesc(a, b) {
 
 function buildSongView(song, latestEvent = null) {
   const state = normalizeStateName(latestEvent?.stateAfter || song?.state) || "draft";
+  const eventPayload = latestEvent?.payload || {};
+  // Pull lyrics/songMeaning/artwork from event payload first (freshest),
+  // then song table. The website needs all three to render homepage and
+  // song-meanings dossiers.
+  const lyrics = String(eventPayload.lyrics || song.lyrics || "").trim();
+  const songMeaning = String(
+    eventPayload.songMeaning ||
+    song.songMeaning ||
+    eventPayload.songContextMeaning ||
+    ""
+  ).trim();
+  const artwork = String(
+    eventPayload.artwork ||
+    eventPayload.artworkUrl ||
+    song.artwork ||
+    ""
+  ).trim();
   return {
     songId: song.songId || latestEvent?.songId || "",
     title: song.title || latestEvent?.title || "",
@@ -397,7 +437,9 @@ function buildSongView(song, latestEvent = null) {
     traceId: latestEvent?.traceId || song.traceId || "",
     publishedAt: latestEvent?.timestamp || song.publishedAt || "",
     sourceUrl: latestEvent?.sourceUrl || song.sourceUrl || "",
-    artwork: song.artwork || "",
+    artwork,
+    lyrics,
+    songMeaning,
     updatedAt: latestEvent?.timestamp || song.updatedAt || song.publishedAt || "",
     contentHash: song.contentHash || ""
   };
@@ -451,7 +493,7 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
   songViews.sort(compareReleaseSongsDesc);
 
   const signal = songViews.filter((song) => song.state === "draft");
-  const incoming = songViews.filter((song) => song.state === "coming_soon");
+  const comingSoon = songViews.filter((song) => song.state === "coming_soon");
   const released = songViews.filter((song) => song.state === "released");
   const releaseIndex = {};
   for (const song of released) {
@@ -478,12 +520,28 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
   const sourceUrl = latestReleased?.sourceUrl || latestEvent?.sourceUrl || "";
   const publishedAt = latestReleased?.publishedAt || latestEvent?.timestamp || latestEvent?.createdAt || "";
   const traceId = latestReleased?.traceId || latestEvent?.traceId || "";
-  const eventsStream = orderedEvents.slice(0, 50).map((event) => ({
+  const eventsForArtifact = orderedEvents.slice(0, 50).map((event) => ({
     songId: event.songId || "",
     eventType: event.eventType || "",
     stateAfter: normalizeStateName(event.stateAfter) || "draft",
     timestamp: event.timestamp || event.publishedAt || event.createdAt || ""
   }));
+
+  // featuredRelease drives the homepage's top-of-page release card.
+  // Built from the latest released song so the page swaps automatically
+  // when a new YouTube release is detected.
+  const featuredRelease = latestReleased ? {
+    songId: latestReleased.songId || "",
+    title: latestReleased.title || "",
+    videoId: latestReleased.songId || "",
+    sourceUrl: latestReleased.sourceUrl || "",
+    artwork: latestReleased.artwork || (latestReleased.songId
+      ? `https://img.youtube.com/vi/${latestReleased.songId}/hqdefault.jpg`
+      : ""),
+    lyrics: latestReleased.lyrics || "",
+    songMeaning: latestReleased.songMeaning || "",
+    publishedAt: latestReleased.publishedAt || ""
+  } : null;
 
   return {
     generatedAt,
@@ -491,10 +549,11 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
     homepage: {
       banner: {
         title,
-        image: null,
+        image: featuredRelease?.artwork || null,
         sourceUrl,
         activeReleaseId: releaseId
       },
+      featuredRelease,
       lastUpdatedAt: generatedAt
     },
     release: {
@@ -505,12 +564,12 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
     },
     releaseIndex,
     signal,
-    incoming,
+    comingSoon,
     released,
     signalCount: signal.length,
-    comingSoonCount: incoming.length,
+    comingSoonCount: comingSoon.length,
     releasedCount: released.length,
-    eventsStream
+    events: eventsForArtifact
   };
 }
 
@@ -544,7 +603,7 @@ async function loadSongsTableItems() {
 
 async function loadEventStreamPage(exclusiveStartKey) {
   const input = {
-    TableName: TABLE_NAME,
+    TableName: EVENT_STREAM_TABLE_NAME,
     KeyConditionExpression: "#pk = :pk",
     ExpressionAttributeNames: {
       "#pk": "pk"
