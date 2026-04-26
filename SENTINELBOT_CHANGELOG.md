@@ -7,6 +7,9 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.7.3 - April 2026
+- Added `TODO.md` at the repo root with an honest backlog of future enhancements grouped by pipeline correctness, cost/observability, capability, test coverage, schedule/deploy
+
 ## v1.7.2 - April 2026
 - Added `AGENTS.md` at the repo root with the contributor workflow checklist (test gate, scoped staging, deploy zip rules, smoke-test steps, heartbeat and alerting pointers) so the same rules are visible to future contributors
 
