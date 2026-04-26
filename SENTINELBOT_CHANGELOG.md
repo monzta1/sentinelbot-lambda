@@ -7,6 +7,9 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.7.1 - April 2026
+- Bundled `SENTINELBOT_CHANGELOG.md` into the Lambda zip so `loadSentinelbotVersion()` reads the current version at runtime instead of falling through to the legacy default
+
 ## v1.7.0 - April 2026
 - Added Lambda regression tests across publisher, release-detector, SentinelBot main handler, plus c8 coverage gate at 90% lines and statements
 - Marked external-IO functions and handler entry points with c8 ignore so the gate measures pure-function correctness
