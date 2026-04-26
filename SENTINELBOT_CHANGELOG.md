@@ -7,6 +7,54 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.7.0 - April 2026
+- Added Lambda regression tests across publisher, release-detector, SentinelBot main handler, plus c8 coverage gate at 90% lines and statements
+- Marked external-IO functions and handler entry points with c8 ignore so the gate measures pure-function correctness
+- Current coverage: publisher 92.48%, release-detector 91.98%, shield-cli 92%, event-stream 93.22%; overall 91.63% lines
+
+## v1.6.2 - April 2026
+- Added an optional Healthchecks.io heartbeat ping to the release-detector so a missed scheduled run triggers an alert email after the grace period
+- Best-effort: a network failure on the heartbeat endpoint does not break the scan flow
+
+## v1.6.1 - April 2026
+- Added per-IP rate limit on SentinelBot at 15 questions per minute, returning HTTP 429 with a friendly in-voice message
+- Atomic counter on the existing logs table; fail-open so a DynamoDB blip never blocks legit users
+- Disable via `SENTINEL_RATE_LIMIT_DISABLED=true` env var if needed
+
+## v1.6.0 - April 2026
+- Taught SentinelBot to read the Signal Room: questions about upcoming or in-progress songs now answer with live `coming_soon` data from the songs table instead of deflecting
+- Injected the Signal Room data into every Claude system prompt so colloquial phrasings ("anything in the oven", "what's brewing") get recognized without phrase-matching
+- Pure-function deterministic answer for the common phrasings; cached DynamoDB scan to keep cost negligible
+
+## v1.5.4 - April 2026
+- Updated `buildSongView` so the songs-table state wins over synthesized event states; SONG_UPDATED events from shield-cli no longer demote a released record
+- Updated `normalizeSongTableItem` to read shield-cli's lowercase `songmeaning` and to prefer `artworkUrl` over the source filename in `artwork`
+
+## v1.5.3 - April 2026
+- Fixed five publisher bugs surfaced by the e2e war-game: handler now loads songs alongside events, EventStream uses Scan instead of an unmatched constant pk, source detection prefers `event.source` over the freshest event's source, and the canonical artifact ends with a trailing newline
+- Verified end-to-end via a live publish into shieldbearer-website and a clean rollback
+
+## v1.5.2 - April 2026
+- Aliased every DynamoDB attribute name in `updateWatcherState` so reserved words like `source` and `processed` no longer break the UpdateExpression
+- Added `status: "released"` and `releaseDetected: true` stamps in the release-detector's `buildSongItem` and merge logic so the publisher routes new releases to `released[]`
+
+## v1.5.1 - April 2026
+- Release-detector now scans for a `coming_soon` draft matching the new release by normalized title and merges its lyrics, songMeaning, and artwork onto the released record before write
+- Deletes the stale draft after merge so the publisher does not double-list the song
+- Bridges the songId mismatch between shield-cli (slug) and release-detector (videoId)
+
+## v1.5.0 - April 2026
+- Publisher now emits a website-compatible `site.json` schema: `comingSoon` instead of `incoming`, `events` instead of `eventsStream`, with `homepage.featuredRelease` populated from the latest released song
+- Enriched `released[]` entries with lyrics, songMeaning, and artwork so the homepage and song-meanings page render full content without a separate fetch
+
+## v1.4.46 - April 2026
+- Added a `RESERVED_ARTWORK_FILES` guard in `cleanupPublishedArtwork` so dropzone clears no longer wipe `desk.jpg` (the permanent Signal Room backdrop)
+- Wrote a `scripts/fetch-merch.sh` baker that pulls from the Shopify public sitemap and produces `data/merch.json` for the website rotator
+
+## v1.4.45 - April 2026
+- Reset Shield CLI to a parsing-only contract with deterministic slug and local artwork detection
+- Removed write-side behavior from the CLI path so it returns a single parsing JSON object only
+
 ## v1.4.44 - April 2026
 - Added replay controls to the Signal Room frontend for event-stream playback and pause/reset behavior
 - Kept replay mode fully client-side and driven only by the current `site.json` snapshot
