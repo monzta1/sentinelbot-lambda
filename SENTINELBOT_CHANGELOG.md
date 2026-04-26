@@ -9,6 +9,7 @@ Versioning note:
 
 ## v1.7.1 - April 2026
 - Bundled `SENTINELBOT_CHANGELOG.md` into the Lambda zip so `loadSentinelbotVersion()` reads the current version at runtime instead of falling through to the legacy default
+- Removed the stale `SENTINELBOT_VERSION` env var that was pinning the bot to v1.4.0; the changelog file is now the single source of truth for the reported version
 
 ## v1.7.0 - April 2026
 - Added Lambda regression tests across publisher, release-detector, SentinelBot main handler, plus c8 coverage gate at 90% lines and statements
