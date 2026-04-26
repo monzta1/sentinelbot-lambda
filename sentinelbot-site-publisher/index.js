@@ -960,5 +960,8 @@ module.exports = {
   parseAllowedSources,
   compareReleaseEventsDesc,
   normalizeReleaseEventItem,
+  normalizeSongTableItem,
+  buildSongView,
+  buildEmptySiteArtifact,
   hashContent
 };

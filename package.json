@@ -4,10 +4,13 @@
     "backfill:songs-table": "node scripts/backfill-songs-table.js",
     "sync:songs-table": "SONGS_BACKFILL_SOURCE=eventstream SONGS_REPLACE_EXISTING=true node scripts/backfill-songs-table.js",
     "verify:songs-table": "node scripts/verify-songs-table.js",
-    "test": "node tools/shield-cli/tests/run-tests.js"
+    "test": "node tools/shield-cli/tests/run-tests.js && node sentinelbot-site-publisher/tests/run-tests.js && node sentinelbot-release-detector-youtube/tests/run-tests.js && node tests/run-tests.js"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1032.0",
     "@aws-sdk/lib-dynamodb": "^3.1032.0"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-sns": "^3.1037.0"
   }
 }

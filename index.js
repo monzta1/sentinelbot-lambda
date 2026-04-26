@@ -3409,3 +3409,16 @@ exports.handler = async (event) => {
     };
   }
 };
+
+// Exposed for unit tests. Lambda runtime only calls `handler`; the
+// rest are pure functions whose behavior was bug-prone (signal-room
+// intent detection, deterministic Signal Room answer, rate-limit
+// bucket math). Tests live in tests/run-tests.js.
+module.exports = {
+  handler: exports.handler,
+  isUpcomingQuestion,
+  buildSignalRoomAnswer,
+  buildSignalRoomSystemBlock,
+  rateLimitMinuteBucket,
+  normalizeQuestion
+};

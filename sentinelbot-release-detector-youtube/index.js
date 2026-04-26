@@ -896,5 +896,7 @@ module.exports = {
   isReleaseCandidate,
   buildSongItem,
   writeSongItem,
-  normalizeSongTitle
+  mergeDraftOntoSongItem,
+  normalizeSongTitle,
+  extractLyricsFromDescription
 };
