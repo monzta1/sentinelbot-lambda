@@ -225,6 +225,7 @@ function logStage(event, details) {
   }));
 }
 
+/* c8 ignore start: external-IO functions tested via war-game pattern, not unit tests */
 async function fetchJson(url) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -322,6 +323,7 @@ async function loadWatcherState() {
   }));
   return response?.Item || null;
 }
+/* c8 ignore stop */
 
 function buildReleaseEventItem(video) {
   const releaseKey = `${EVENT_PREFIX}${video.videoId}`;
@@ -448,6 +450,7 @@ function buildEventStreamItem(releaseEvent) {
   };
 }
 
+/* c8 ignore start: external-IO functions tested via war-game pattern */
 async function writeReleaseEvent(video) {
   const item = buildReleaseEventItem(video);
   try {
@@ -517,6 +520,7 @@ async function findDraftSongByTitle(normalizedTitleTarget) {
 // released record so YouTube release transitions inherit the polished
 // content. Draft fields win over auto-extracted ones for lyrics,
 // songMeaning, and artwork.
+/* c8 ignore stop */
 function mergeDraftOntoSongItem(songItem, draft) {
   if (!draft) return songItem;
   const merged = { ...songItem };
@@ -554,6 +558,7 @@ function mergeDraftOntoSongItem(songItem, draft) {
 // detected (createdCount > 0) or when the scan fails. Suppresses
 // hourly "nothing happened" noise so the inbox stays quiet on most
 // Friday runs and the user only hears when it matters.
+/* c8 ignore start: external-IO + handler entry, tested via war-game pattern */
 async function publishScanSummary(payload) {
   if (!SNS_TOPIC_ARN) return;
   const ok = payload.status === "ok";
@@ -720,11 +725,13 @@ async function updateWatcherState({
     ExpressionAttributeValues: expressionValues
   }));
 }
+/* c8 ignore stop */
 
 function shouldStopScanning(videoId, lastSeenVideoId) {
   return Boolean(lastSeenVideoId && videoId === lastSeenVideoId);
 }
 
+/* c8 ignore start: handler entry, tested via war-game pattern */
 exports.handler = async () => {
   const startedAt = Date.now();
   const requestTimestamp = nowIso();
@@ -885,6 +892,7 @@ exports.handler = async () => {
     };
   }
 };
+/* c8 ignore stop */
 
 module.exports = {
   handler: exports.handler,
@@ -897,6 +905,7 @@ module.exports = {
   buildSongItem,
   writeSongItem,
   mergeDraftOntoSongItem,
+  shouldStopScanning,
   normalizeSongTitle,
   extractLyricsFromDescription
 };

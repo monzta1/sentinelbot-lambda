@@ -128,6 +128,76 @@ Watch on YouTube
   assertEqual(lyrics, "", "extractor returns empty for boilerplate-only descriptions");
 }
 
+// --- getReleaseMetadata: classify shorts and short-duration videos ---
+{
+  // #shorts hashtag in title
+  const shortsTitle = det.getReleaseMetadata({ title: "Shieldbearer Live #shorts", durationSeconds: 60 });
+  assertEqual(shortsTitle.isCandidate, false, "title with #shorts -> not a candidate");
+  assertEqual(shortsTitle.rejectionReason, "title_contains_shorts_hashtag", "rejection reason set");
+
+  // Too short duration
+  const tooShort = det.getReleaseMetadata({ title: "Quick clip", durationSeconds: 30 });
+  assertEqual(tooShort.isCandidate, false, "duration below 45s -> not a candidate");
+  assertEqual(tooShort.rejectionReason, "duration_below_45_seconds", "rejection reason set");
+
+  // Healthy release
+  const healthy = det.getReleaseMetadata({ title: "Sentinels Official Music Video", durationSeconds: 200 });
+  assertEqual(healthy.isCandidate, true, "music + official keyword + >45s -> candidate");
+  assert(healthy.score >= 2, "release keywords accumulate in score");
+
+  // Low-confidence (no keywords, sub-45s)
+  const lowConf = det.getReleaseMetadata({ title: "untitled", durationSeconds: 30 });
+  assertEqual(lowConf.lowConfidence, true, "no keyword + short duration flagged low confidence");
+}
+
+// --- isReleaseCandidate wrapper ---
+{
+  assert(det.isReleaseCandidate({ title: "Sentinels Music", durationSeconds: 180 }) === true, "isReleaseCandidate true for healthy entry");
+  assert(det.isReleaseCandidate({ title: "Sentinels #shorts", durationSeconds: 180 }) === false, "isReleaseCandidate false for shorts");
+}
+
+// --- buildReleaseEventItem: shape of output ---
+{
+  const video = {
+    videoId: "ABC123",
+    title: "Sentinels Official Music Video",
+    description: "Watchman themes",
+    sourceUrl: "https://www.youtube.com/watch?v=ABC123",
+    publishedAt: "2026-04-25T20:00:00Z",
+    durationSeconds: 240
+  };
+  const event = det.buildReleaseEventItem(video);
+  assertEqual(event.id, "ABC123", "event id is the videoId");
+  assertEqual(event.source, "youtube", "source stamped youtube");
+  assertEqual(event.processed, false, "processed flag starts false");
+  assert(event.pk.startsWith("releaseevent#youtube#"), "pk has expected prefix");
+}
+
+// --- buildSongItem: derived fields ---
+{
+  const video = {
+    videoId: "XYZ",
+    title: "Test Song Official",
+    description: "[Verse 1]\nLine one\nLine two\nLine three\n\n[Chorus]\nHook one\nHook two",
+    sourceUrl: "https://www.youtube.com/watch?v=XYZ",
+    publishedAt: "2026-04-25T20:00:00Z",
+    durationSeconds: 200
+  };
+  const item = det.buildSongItem(video);
+  assert(item.normalizedTitle.length > 0, "buildSongItem populates normalizedTitle");
+  assert(typeof item.canonicalTitle === "string", "canonicalTitle present");
+  assert(typeof item.meaningUrl === "string" && item.meaningUrl.includes("song-meanings"), "meaningUrl points to song-meanings page");
+  assertEqual(item.contentFormat, "full", "long-form content marked full");
+  assertEqual(item.isShort, false, "long-form not marked as short");
+}
+
+// --- shouldStopScanning ---
+{
+  assert(det.shouldStopScanning("vid1", "vid1") === true, "stops when videoId matches lastSeen");
+  assert(det.shouldStopScanning("vid1", "vid2") === false, "continues when videoId differs from lastSeen");
+  assert(det.shouldStopScanning("vid1", null) === false, "continues when no lastSeen recorded yet");
+}
+
 console.log("\n=========================================");
 console.log(`Release-detector tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

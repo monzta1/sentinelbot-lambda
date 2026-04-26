@@ -166,6 +166,7 @@ function backoffDelayMs(attempt, retryAfterMs = null) {
   return Math.min(GITHUB_BASE_DELAY_MS * (2 ** attempt), 10_000) + jitter;
 }
 
+/* c8 ignore start: external-IO functions tested via war-game pattern, not unit tests */
 async function githubRequestOnce(url, { method = "GET", body } = {}) {
   const response = await fetch(url, {
     method,
@@ -239,6 +240,7 @@ async function githubRequestWithRetry(url, options = {}, context = {}) {
 
   throw lastError;
 }
+/* c8 ignore stop */
 
 function encodeContent(content) {
   return Buffer.from(String(content || ""), "utf8").toString("base64");
@@ -586,6 +588,7 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
   };
 }
 
+/* c8 ignore start: external-IO + handler entry, tested via war-game pattern */
 async function loadSongsTablePage(exclusiveStartKey) {
   const input = {
     TableName: SONGS_TABLE_NAME,
@@ -940,6 +943,7 @@ exports.handler = async (event = {}) => {
   }
 };
 
+/* c8 ignore stop */
 module.exports = {
   handler: exports.handler,
   resolveSiteArtifact,

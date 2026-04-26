@@ -176,6 +176,232 @@ function assertEqual(actual, expected, label) {
   assert(JSON.parse(out).a === 1, "canonical artifact is valid JSON");
 }
 
+// --- buildSiteArtifactFromEvents: empty inputs return empty artifact ---
+{
+  const out = pub.buildSiteArtifactFromEvents({ events: [], songs: [] });
+  assertEqual(out.released.length, 0, "empty inputs -> empty released bucket");
+  assertEqual(out.comingSoon.length, 0, "empty inputs -> empty comingSoon bucket");
+  assertEqual(out.events.length, 0, "empty inputs -> empty events bucket");
+}
+
+// --- buildSiteArtifactFromEvents: event without matching song synthesizes a song ---
+{
+  // When an event references a songId not in the songs table, the
+  // publisher synthesizes a thin song record so the event still
+  // produces output.
+  const events = [{
+    eventId: "e1",
+    songId: "lone-event-id",
+    title: "Lone Event",
+    eventType: "SONG_RELEASED",
+    source: "youtube",
+    timestamp: "2026-04-25T12:00:00Z",
+    stateAfter: "released",
+    payload: {}
+  }];
+  const out = pub.buildSiteArtifactFromEvents({ events, songs: [] });
+  assertEqual(out.released.length, 1, "lone event without song record still produces released entry");
+  assertEqual(out.released[0].title, "Lone Event", "synthesized song carries event title");
+}
+
+// --- compareReleaseEventsDesc: timestamp tiebreak via songId ---
+{
+  const a = { timestamp: "2026-04-25T20:00:00Z", songId: "alpha" };
+  const b = { timestamp: "2026-04-25T20:00:00Z", songId: "beta" };
+  const cmp = pub.compareReleaseEventsDesc(a, b);
+  assert(cmp !== 0, "equal timestamps fall back to songId comparison");
+}
+
+// --- normalizeReleaseEventItem: returns null for non-objects ---
+{
+  assertEqual(pub.normalizeReleaseEventItem(null), null, "null input -> null");
+  assertEqual(pub.normalizeReleaseEventItem("string"), null, "string input -> null");
+}
+
+// --- normalizeReleaseEventItem: synthesizes stateAfter from cli + youtube hints ---
+{
+  const cliEvent = pub.normalizeReleaseEventItem({
+    id: "e1", songId: "s1", title: "T", eventType: "CLI_INGEST", source: "shield-ingest-cli", timestamp: "2026-04-25T20:00:00Z"
+  });
+  assertEqual(cliEvent.stateAfter, "coming_soon", "CLI_INGEST event without explicit stateAfter -> coming_soon");
+
+  const youtubeEvent = pub.normalizeReleaseEventItem({
+    id: "e2", songId: "s2", title: "T", eventType: "new_content_detected", source: "youtube", timestamp: "2026-04-25T20:00:00Z"
+  });
+  assertEqual(youtubeEvent.stateAfter, "released", "youtube source -> released stateAfter");
+}
+
+// --- getArtifactReleaseId / getArtifactSource: read from nested fields ---
+{
+  const id = pub.getArtifactReleaseId({ homepage: { banner: { activeReleaseId: "abc" } } });
+  assertEqual(id, "abc", "release id pulled from homepage.banner.activeReleaseId");
+  const id2 = pub.getArtifactReleaseId({ release: { id: "xyz" } });
+  assertEqual(id2, "xyz", "release id falls back to release.id");
+  const src = pub.getArtifactSource({}, { source: "youtube" });
+  assertEqual(src, "youtube", "event source preferred over artifact source");
+}
+
+// --- normalizeReleaseEventItem: skips items missing identity ---
+{
+  const skipped = pub.normalizeReleaseEventItem({ id: "", payload: {} });
+  // Returns shape with empty fields, but eventId is empty
+  assertEqual(skipped.eventId, "", "missing id yields empty eventId");
+}
+
+// --- normalizeSongTableItem: rejects malformed input ---
+{
+  assertEqual(pub.normalizeSongTableItem(null), null, "null input -> null");
+  assertEqual(pub.normalizeSongTableItem("string"), null, "string input -> null");
+  assertEqual(pub.normalizeSongTableItem({}), null, "missing songId -> null");
+}
+
+// --- compareSongsDesc / compareReleaseSongsDesc: tiebreak by songId ---
+{
+  const a = { publishedAt: "2026-04-25T20:00:00Z", songId: "a" };
+  const b = { publishedAt: "2026-04-25T20:00:00Z", songId: "b" };
+  assert(pub.compareReleaseEventsDesc(
+    { timestamp: a.publishedAt, songId: "a" },
+    { timestamp: b.publishedAt, songId: "b" }
+  ) !== 0, "release events desc: tie broken by songId");
+}
+
+// --- buildSiteArtifactFromEvents: events without songId are skipped ---
+{
+  const events = [
+    { eventId: "e1", songId: "", title: "skipped", eventType: "SONG_RELEASED", source: "youtube", timestamp: "2026-04-25T20:00:00Z", stateAfter: "released" },
+    { eventId: "e2", songId: "valid", title: "Valid", eventType: "SONG_RELEASED", source: "youtube", timestamp: "2026-04-25T20:00:00Z", stateAfter: "released" }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events, songs: [] });
+  assertEqual(out.released.length, 1, "events without songId are skipped");
+}
+
+// --- normalizeSongTableItem: alternate id fields ---
+{
+  const fromId = pub.normalizeSongTableItem({ id: "x1", title: "X", status: "released" });
+  assertEqual(fromId.songId, "x1", "songId falls back to id");
+  const fromPk = pub.normalizeSongTableItem({ pk: "x2", title: "X", status: "released" });
+  assertEqual(fromPk.songId, "x2", "songId falls back to pk");
+}
+
+// --- normalizeReleaseEventItem: stateAfter inference branches ---
+{
+  // payload.releaseDetected
+  const e1 = pub.normalizeReleaseEventItem({
+    id: "e", songId: "s", title: "T", eventType: "X", source: "x",
+    timestamp: "2026-04-25T20:00:00Z", payload: { releaseDetected: true }
+  });
+  assertEqual(e1.stateAfter, "released", "payload.releaseDetected -> released");
+
+  // payload.status === "released"
+  const e2 = pub.normalizeReleaseEventItem({
+    id: "e", songId: "s", title: "T", eventType: "X", source: "x",
+    timestamp: "2026-04-25T20:00:00Z", payload: { status: "released" }
+  });
+  assertEqual(e2.stateAfter, "released", "payload.status released -> released");
+
+  // payload.status with non-released value
+  const e3 = pub.normalizeReleaseEventItem({
+    id: "e", songId: "s", title: "T", eventType: "X", source: "x",
+    timestamp: "2026-04-25T20:00:00Z", payload: { status: "coming_soon" }
+  });
+  assertEqual(e3.stateAfter, "coming_soon", "payload.status normalized");
+
+  // fallback draft
+  const e4 = pub.normalizeReleaseEventItem({
+    id: "e", songId: "s", title: "T", eventType: "X", source: "x",
+    timestamp: "2026-04-25T20:00:00Z", payload: {}
+  });
+  assertEqual(e4.stateAfter, "draft", "no signals -> draft fallback");
+}
+
+// --- compareReleaseEventsDesc: different timestamps sort newest first ---
+{
+  const a = { timestamp: "2026-04-25T20:00:00Z", songId: "a" };
+  const b = { timestamp: "2026-04-25T22:00:00Z", songId: "b" };
+  const cmp = pub.compareReleaseEventsDesc(a, b);
+  assert(cmp > 0, "newer timestamp comes first in desc sort");
+}
+
+// --- buildSiteArtifactFromEvents: duplicate songId events keep only latest ---
+{
+  const events = [
+    { eventId: "e1", songId: "abc", title: "T", eventType: "SONG_RELEASED", source: "youtube", timestamp: "2026-04-25T22:00:00Z", stateAfter: "released" },
+    { eventId: "e2", songId: "abc", title: "T", eventType: "SONG_UPDATED", source: "youtube", timestamp: "2026-04-25T20:00:00Z", stateAfter: "released" }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events, songs: [] });
+  assertEqual(out.released.length, 1, "duplicate songId -> only one entry");
+  assertEqual(out.events.length, 2, "all events retained in events stream");
+}
+
+// --- buildSiteArtifactFromEvents: duplicate titles keep first releaseIndex entry ---
+{
+  // Two released songs with the same normalized title; only the first
+  // claims the releaseIndex slot. Covers the dedup branch.
+  const songs = [
+    {
+      songId: "first", title: "Galilean", state: "released",
+      publishedAt: "2026-04-25T22:00:00Z", lyrics: "x", songMeaning: "y", artwork: ""
+    },
+    {
+      songId: "second", title: "Galilean", state: "released",
+      publishedAt: "2026-04-25T20:00:00Z", lyrics: "x", songMeaning: "y", artwork: ""
+    }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events: [], songs });
+  const keys = Object.keys(out.releaseIndex || {});
+  assertEqual(keys.length, 1, "duplicate normalized title -> single releaseIndex entry");
+}
+
+// --- encodeContent / decodeContent round-trip ---
+{
+  const s = "hello world\nGo DOWN, Moses";
+  const encoded = pub.encodeContent(s);
+  assert(encoded.length > 0, "encodeContent returns non-empty base64");
+  assertEqual(pub.decodeContent(encoded), s, "decodeContent round-trips encoded content");
+  assertEqual(pub.decodeContent(""), "", "decodeContent handles empty");
+}
+
+// --- hashContent: deterministic ---
+{
+  const a = pub.hashContent("test");
+  const b = pub.hashContent("test");
+  const c = pub.hashContent("different");
+  assertEqual(a, b, "hashContent deterministic for same input");
+  assert(a !== c, "hashContent differs for different input");
+}
+
+// --- buildSiteArtifactFromEvents: multiple songs trigger sort comparators ---
+{
+  const songs = [
+    { songId: "older", title: "Older", state: "released", publishedAt: "2026-04-20T00:00:00Z" },
+    { songId: "newer", title: "Newer", state: "released", publishedAt: "2026-04-25T00:00:00Z" },
+    { songId: "middle", title: "Middle", state: "released", publishedAt: "2026-04-22T00:00:00Z" }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events: [], songs });
+  assertEqual(out.released[0].title, "Newer", "released sorted newest-first");
+  assertEqual(out.homepage.featuredRelease.title, "Newer", "featuredRelease is the newest");
+}
+
+// --- buildSongView: synthesizes from event when song has no fields ---
+{
+  // Covers the path where a song record is sparse and the event
+  // payload carries the actual content.
+  const sparseSong = { songId: "abc", title: "" };
+  const eventWithPayload = {
+    songId: "abc", traceId: "t1", title: "From Event",
+    timestamp: "2026-04-25T20:00:00Z", sourceUrl: "https://x/y",
+    payload: {
+      lyrics: "from payload",
+      songMeaning: "meaning from payload",
+      artwork: "https://x/art.jpg"
+    }
+  };
+  const view = pub.buildSongView(sparseSong, eventWithPayload);
+  assertEqual(view.lyrics, "from payload", "lyrics pulled from event payload");
+  assertEqual(view.artwork, "https://x/art.jpg", "artwork pulled from event payload");
+  assertEqual(view.title, "From Event", "title falls back to event title");
+}
+
 console.log("\n=========================================");
 console.log(`Publisher tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

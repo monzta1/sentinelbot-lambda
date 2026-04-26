@@ -1,0 +1,18 @@
+{
+  "include": [
+    "sentinelbot-site-publisher/index.js",
+    "sentinelbot-release-detector-youtube/index.js",
+    "tools/shield-cli/bin/shield.js",
+    "tools/shield-cli/src/event-stream.js"
+  ],
+  "exclude": [
+    "**/tests/**",
+    "**/node_modules/**"
+  ],
+  "check-coverage": true,
+  "lines": 90,
+  "statements": 90,
+  "functions": 80,
+  "branches": 60,
+  "reporter": ["text-summary"]
+}
