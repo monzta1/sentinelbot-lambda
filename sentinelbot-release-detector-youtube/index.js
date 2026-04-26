@@ -16,6 +16,7 @@ const WATCHER_KEY = "releasewatcher#youtube";
 const EVENT_PREFIX = "releaseevent#youtube#";
 const EVENT_STREAM_PK = "eventstream";
 const DEBUG_FILTER = String(process.env.DEBUG_FILTER || "").toLowerCase() === "true";
+const HEALTHCHECK_URL = process.env.HEALTHCHECK_URL || "";
 
 function nowIso() {
   return new Date().toISOString();
@@ -559,6 +560,28 @@ function mergeDraftOntoSongItem(songItem, draft) {
 // hourly "nothing happened" noise so the inbox stays quiet on most
 // Friday runs and the user only hears when it matters.
 /* c8 ignore start: external-IO + handler entry, tested via war-game pattern */
+// Ping Healthchecks.io (or any compatible heartbeat URL) so a missed
+// scheduled run triggers an alert email after the configured grace
+// period. Best-effort: a failed ping must never break the scan.
+//   - HEALTHCHECK_URL unset -> silent no-op
+//   - status="ok" -> POST to base URL (success ping)
+//   - status="failed" -> POST to URL + "/fail" (failure ping)
+async function pingHealthcheck(status, body) {
+  if (!HEALTHCHECK_URL) return;
+  const url = status === "failed" ? `${HEALTHCHECK_URL}/fail` : HEALTHCHECK_URL;
+  try {
+    await fetch(url, {
+      method: "POST",
+      body: typeof body === "string" ? body : JSON.stringify(body || {}),
+      headers: { "content-type": "application/json" }
+    });
+  } catch (error) {
+    logStage("healthcheck-ping-failed", {
+      error: error?.message || String(error)
+    });
+  }
+}
+
 async function publishScanSummary(payload) {
   if (!SNS_TOPIC_ARN) return;
   const ok = payload.status === "ok";
@@ -854,6 +877,13 @@ exports.handler = async () => {
       elapsedMs
     });
 
+    await pingHealthcheck("ok", {
+      timestamp: requestTimestamp,
+      scannedCount: enrichedVideos.length,
+      createdCount: events.length,
+      elapsedMs
+    });
+
     return {
       statusCode: 200,
       body: JSON.stringify({
@@ -878,6 +908,12 @@ exports.handler = async () => {
 
     await publishScanSummary({
       status: "failed",
+      timestamp: requestTimestamp,
+      error: error.message,
+      elapsedMs
+    });
+
+    await pingHealthcheck("failed", {
       timestamp: requestTimestamp,
       error: error.message,
       elapsedMs
