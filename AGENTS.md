@@ -1,4 +1,4 @@
-# SentinelBot Lambda — Contributor Workflow
+# SentinelBot Lambda. Contributor Workflow.
 
 This file lives in the repo so anyone working on it (human or AI
 collaborator) follows the same flow. If you're an AI, treat this as
