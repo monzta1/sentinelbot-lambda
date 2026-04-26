@@ -7,6 +7,9 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.7.2 - April 2026
+- Added `AGENTS.md` at the repo root with the contributor workflow checklist (test gate, scoped staging, deploy zip rules, smoke-test steps, heartbeat and alerting pointers) so the same rules are visible to future contributors
+
 ## v1.7.1 - April 2026
 - Bundled `SENTINELBOT_CHANGELOG.md` into the Lambda zip so `loadSentinelbotVersion()` reads the current version at runtime instead of falling through to the legacy default
 - Removed the stale `SENTINELBOT_VERSION` env var that was pinning the bot to v1.4.0; the changelog file is now the single source of truth for the reported version
