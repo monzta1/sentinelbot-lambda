@@ -780,6 +780,8 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
       : ""),
     lyrics: latestReleased.lyrics || "",
     songMeaning: latestReleased.songMeaning || "",
+    reference: latestReleased.reference || "",
+    scripture: latestReleased.scripture || { ref: "", quote: "" },
     publishedAt: latestReleased.publishedAt || ""
   } : null;
 

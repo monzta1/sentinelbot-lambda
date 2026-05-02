@@ -789,6 +789,26 @@ function assertEqual(actual, expected, label) {
     "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg",
     "featuredRelease has curated artwork"
   );
+  assert("reference" in fr, "featuredRelease carries reference field");
+  assert("scripture" in fr, "featuredRelease carries scripture field");
+}
+
+// --- buildSiteArtifactFromEvents: featuredRelease carries scripture from curated record ---
+{
+  const songs = [
+    {
+      songId: "let-my-people-go",
+      title: "Let My People Go",
+      state: "released",
+      reference: "Exodus 5:1",
+      scripture: { ref: "Exodus 5:1", quote: "Let my people go..." }
+    }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events: [], songs });
+  const fr = out.homepage.featuredRelease;
+  assertEqual(fr.reference, "Exodus 5:1", "featuredRelease.reference passes through");
+  assertEqual(fr.scripture.ref, "Exodus 5:1", "featuredRelease.scripture.ref passes through");
+  assertEqual(fr.scripture.quote, "Let my people go...", "featuredRelease.scripture.quote passes through");
 }
 
 // --- parseAutoApproveSources: empty / malformed inputs ---
