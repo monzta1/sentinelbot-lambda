@@ -7,6 +7,12 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.8.1 - May 2026
+- Site publisher now loads release events from `shieldbearer-sentinel-logs` (pk pattern `releaseevent#youtube#<videoId>`) in addition to `EventStream`. The legacy table holds the long history of detected releases (~547 records); without this loader the timeline showed only the 26 EventStream entries (mostly shield-cli SONG_UPDATED ticks) and lost a year of release context.
+- Added `mergeReleasedWithComingSoon` to dedupe songs across states by normalized title. shield-cli ingests songs as `coming_soon` with curated lyrics and artwork; the release-detector creates a separate `released` record keyed by YouTube videoId. Without merge the same song appeared twice with different metadata. Merge promotes the curated record to released, attaches the YouTube videoId/sourceUrl/publishedAt, and drops the YouTube-only twin from comingSoon.
+- `cleanReleaseTitle` now strips bracketed tags (e.g. "[Christian Metal | Official Lyric Video]") before splitting on " | ", so titles with a pipe inside the brackets are no longer chopped at the wrong place.
+- Tightened release-event dedupe key to `songId#publishedAt` so the same release recorded in both source tables collapses to a single timeline entry.
+
 ## v1.8.0 - May 2026
 - Site publisher hardened against release-detector data quality bugs that produced a broken homepage / lyrics page / timeline on the first Saturday-morning auto-publish
   - `cleanReleaseTitle` strips "Shieldbearer - " prefix and " | <marketing>" suffix from titles so the homepage shows just the song name

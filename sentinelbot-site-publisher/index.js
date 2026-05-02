@@ -80,12 +80,17 @@ function shouldAutoApprove(event, releaseSource, autoApproveSources) {
 }
 
 function cleanReleaseTitle(value) {
-  // YouTube titles tend to be "Shieldbearer - <song> | <marketing>".
-  // Strip the artist prefix and the trailing pipe-suffix so the
-  // homepage and timeline display the song title alone.
+  // YouTube titles tend to be "Shieldbearer - <song> [<tag>] | <marketing>"
+  // or "Slayer of the Grave [Christian Metal | Official Lyric Video]".
+  // Strip the artist prefix, drop bracketed tags entirely (often
+  // "Official Video", genre labels, etc.), then strip a trailing
+  // pipe-suffix outside any brackets.
   let title = String(value || "").trim();
   if (!title) return "";
   title = title.replace(/^shieldbearer\s*[-–—]\s*/i, "").trim();
+  // Drop every [bracketed] segment so a "|" inside a bracket cannot
+  // chop the title at the wrong place.
+  title = title.replace(/\s*\[[^\]]*\]\s*/g, " ").trim();
   const pipeIndex = title.indexOf(" | ");
   if (pipeIndex > 0) {
     title = title.slice(0, pipeIndex).trim();
@@ -95,6 +100,8 @@ function cleanReleaseTitle(value) {
   if (title.length >= 2 && title.startsWith("\"") && title.endsWith("\"")) {
     title = title.slice(1, -1).trim();
   }
+  // Collapse any double spaces produced by bracket removal.
+  title = title.replace(/\s{2,}/g, " ").trim();
   return title;
 }
 
@@ -511,6 +518,64 @@ function compareReleaseSongsDesc(a, b) {
   return String(a.songId || "").localeCompare(String(b.songId || ""));
 }
 
+function mergeReleasedWithComingSoon(released, comingSoon) {
+  // Two song records can describe the same song:
+  //   - shield-cli ingest writes a coming_soon record keyed by a
+  //     kebab-case slug (e.g. let-my-people-go) with curated lyrics,
+  //     real artwork, and a clean title.
+  //   - The release detector creates a separate released record keyed
+  //     by the YouTube video id when the music video drops, with
+  //     little curated content beyond the YouTube metadata.
+  // Without merge, the website shows the song twice in different
+  // states with different metadata. Merge by normalized title so a
+  // release event promotes the existing shield-cli record to the
+  // released state and keeps the curated content. The promoted entry
+  // gains the YouTube videoId and sourceUrl so the homepage embed
+  // and the lyrics-page YouTube link both work.
+  const safeReleased = Array.isArray(released) ? released : [];
+  const safeComingSoon = Array.isArray(comingSoon) ? comingSoon : [];
+  if (safeReleased.length === 0 || safeComingSoon.length === 0) {
+    const result = safeReleased.map((song) => ({ ...song, videoId: song.videoId || song.songId || "" }));
+    return { released: result, comingSoon: safeComingSoon };
+  }
+
+  const comingByTitle = new Map();
+  for (const song of safeComingSoon) {
+    const key = normalizeReleaseTitle(song.title);
+    if (!key) continue;
+    if (!comingByTitle.has(key)) comingByTitle.set(key, song);
+  }
+
+  const usedComingSoonIds = new Set();
+  const mergedReleased = safeReleased.map((rel) => {
+    const key = normalizeReleaseTitle(rel.title);
+    const match = key ? comingByTitle.get(key) : null;
+    const youtubeVideoId = rel.videoId || rel.songId || "";
+    if (!match) {
+      return { ...rel, videoId: youtubeVideoId };
+    }
+    usedComingSoonIds.add(match.songId);
+    return {
+      ...match,
+      state: "released",
+      videoId: youtubeVideoId,
+      sourceUrl: rel.sourceUrl || match.sourceUrl || "",
+      publishedAt: rel.publishedAt || match.publishedAt || "",
+      traceId: rel.traceId || match.traceId || "",
+      updatedAt: rel.updatedAt || match.updatedAt || "",
+      // Prefer shield-cli's curated content but fall back to whatever
+      // the release-detector record produced (post-sanitization).
+      lyrics: match.lyrics || rel.lyrics || "",
+      artwork: match.artwork || rel.artwork || "",
+      songMeaning: match.songMeaning || rel.songMeaning || "",
+      title: match.title || rel.title || ""
+    };
+  });
+
+  const remainingComingSoon = safeComingSoon.filter((song) => !usedComingSoonIds.has(song.songId));
+  return { released: mergedReleased, comingSoon: remainingComingSoon };
+}
+
 function buildSongView(song, latestEvent = null) {
   // The songs table is the source of truth for state. Prefer it over
   // the latest event's stateAfter — events get a synthesized "draft"
@@ -545,6 +610,7 @@ function buildSongView(song, latestEvent = null) {
   const rawTitle = song.title || latestEvent?.title || "";
   return {
     songId: song.songId || latestEvent?.songId || "",
+    videoId: song.videoId || "",
     title: cleanReleaseTitle(rawTitle),
     state,
     traceId: latestEvent?.traceId || song.traceId || "",
@@ -606,8 +672,11 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
   songViews.sort(compareReleaseSongsDesc);
 
   const signal = songViews.filter((song) => song.state === "draft");
-  const comingSoon = songViews.filter((song) => song.state === "coming_soon");
-  const released = songViews.filter((song) => song.state === "released");
+  const allComingSoon = songViews.filter((song) => song.state === "coming_soon");
+  const allReleased = songViews.filter((song) => song.state === "released");
+  const merged = mergeReleasedWithComingSoon(allReleased, allComingSoon);
+  const released = merged.released;
+  const comingSoon = merged.comingSoon;
   const releaseIndex = {};
   for (const song of released) {
     const key = normalizeReleaseTitle(song.title || song.songId || "");
@@ -669,13 +738,14 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
   // featuredRelease drives the homepage's top-of-page release card.
   // Built from the latest released song so the page swaps automatically
   // when a new YouTube release is detected.
+  const featuredVideoId = latestReleased?.videoId || latestReleased?.songId || "";
   const featuredRelease = latestReleased ? {
     songId: latestReleased.songId || "",
     title: latestReleased.title || "",
-    videoId: latestReleased.songId || "",
+    videoId: featuredVideoId,
     sourceUrl: latestReleased.sourceUrl || "",
-    artwork: latestReleased.artwork || (latestReleased.songId
-      ? `https://img.youtube.com/vi/${latestReleased.songId}/hqdefault.jpg`
+    artwork: latestReleased.artwork || (featuredVideoId
+      ? `https://img.youtube.com/vi/${featuredVideoId}/hqdefault.jpg`
       : ""),
     lyrics: latestReleased.lyrics || "",
     songMeaning: latestReleased.songMeaning || "",
@@ -788,9 +858,70 @@ async function loadEventStreamItems() {
   return normalized;
 }
 
+async function loadReleaseEventsPage(exclusiveStartKey) {
+  // Release events historically wrote to shieldbearer-sentinel-logs
+  // with pk values like "releaseevent#youtube#<videoId>". The
+  // EventStream table holds the newer SONG_RELEASED + SONG_UPDATED
+  // event shape but currently only carries ~tens of records, so the
+  // legacy table is still the source for the long timeline. Scan
+  // with a begins_with filter on pk; cheap at current scale.
+  const input = {
+    TableName: TABLE_NAME,
+    FilterExpression: "begins_with(#pk, :prefix)",
+    ExpressionAttributeNames: { "#pk": "pk" },
+    ExpressionAttributeValues: { ":prefix": "releaseevent#" },
+    Limit: EVENT_STREAM_PAGE_SIZE
+  };
+
+  if (exclusiveStartKey) {
+    input.ExclusiveStartKey = exclusiveStartKey;
+  }
+
+  return dynamo.send(new ScanCommand(input));
+}
+
+async function loadReleaseEventsFromSentinelLogs() {
+  const items = [];
+  let exclusiveStartKey = null;
+
+  do {
+    const page = await loadReleaseEventsPage(exclusiveStartKey);
+    items.push(...(page?.Items || []));
+    exclusiveStartKey = page?.LastEvaluatedKey || null;
+  } while (exclusiveStartKey);
+
+  return items
+    .map(normalizeReleaseEventItem)
+    .filter(Boolean);
+}
+
+async function loadAllReleaseEvents() {
+  const [eventStreamEvents, sentinelLogEvents] = await Promise.all([
+    loadEventStreamItems(),
+    loadReleaseEventsFromSentinelLogs()
+  ]);
+  // Dedupe by songId+publishedAt so the same release recorded in
+  // both tables (EventStream + shieldbearer-sentinel-logs, common
+  // for the most recent release) collapses to one entry on the
+  // timeline. eventId values differ between tables, so they are not
+  // a reliable dedup key.
+  const seen = new Set();
+  const merged = [];
+  for (const event of [...eventStreamEvents, ...sentinelLogEvents]) {
+    const songId = String(event.songId || "").trim();
+    const ts = String(event.publishedAt || event.timestamp || "").trim();
+    const key = songId && ts ? `${songId}#${ts}` : (event.eventId || "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(event);
+  }
+  merged.sort(compareReleaseEventsDesc);
+  return merged;
+}
+
 async function loadLatestSiteArtifactFromEventStream() {
   const [events, songs] = await Promise.all([
-    loadEventStreamItems(),
+    loadAllReleaseEvents(),
     loadSongsTableItems()
   ]);
   return buildSiteArtifactFromEvents({ events, songs });
@@ -918,7 +1049,7 @@ exports.handler = async (event = {}) => {
     // passed a plain array to a function that expects {events, songs},
     // so songs were never read and the artifact was always empty.
     const [eventStreamItems, songItems] = await Promise.all([
-      loadEventStreamItems(),
+      loadAllReleaseEvents(),
       loadSongsTableItems()
     ]);
     const siteArtifact = buildSiteArtifactFromEvents({
@@ -1108,6 +1239,7 @@ module.exports = {
   cleanReleaseTitle,
   isValidArtworkUrl,
   cleanLyrics,
+  mergeReleasedWithComingSoon,
   compareReleaseEventsDesc,
   normalizeReleaseEventItem,
   normalizeSongTableItem,

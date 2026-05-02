@@ -435,6 +435,20 @@ function assertEqual(actual, expected, label) {
     "Some Track",
     "non-Shieldbearer title still cleans pipe suffix"
   );
+  // Real bug: titles like "Slayer of the Grave [Christian Metal |
+  // Official Lyric Video]" had a "|" inside the brackets, so the
+  // earlier implementation chopped the title to "Slayer of the
+  // Grave [Christian Metal". Strip bracketed tags first.
+  assertEqual(
+    pub.cleanReleaseTitle("Slayer of the Grave [Christian Metal | Official Lyric Video]"),
+    "Slayer of the Grave",
+    "bracketed tag with internal pipe is fully stripped"
+  );
+  assertEqual(
+    pub.cleanReleaseTitle("Pahalgam (A Prayer for India) [Official Audio]"),
+    "Pahalgam (A Prayer for India)",
+    "bracketed tag stripped, parenthesized subtitle preserved"
+  );
 }
 
 // --- isValidArtworkUrl: rejects YouTube watch URLs and non-http ---
@@ -611,6 +625,112 @@ function assertEqual(actual, expected, label) {
   assertEqual(e.publishedAt, "2026-05-02T12:40:33Z", "event publishedAt is the platform-publish time, not detector run time");
   assertEqual(e.sourceUrl, "https://www.youtube.com/watch?v=0lUJcLKIt0o", "event sourceUrl preserved");
   assert("albumId" in e && "isShort" in e && "contentFormat" in e, "event has album/short defaults timeline reads");
+}
+
+// --- mergeReleasedWithComingSoon: merge same-title songs across states ---
+{
+  // Real bug: shield-cli wrote let-my-people-go (coming_soon) with
+  // curated lyrics + artwork; release-detector wrote 0lUJcLKIt0o
+  // (released) with empty lyrics + no artwork. Merge so the release
+  // promotes the curated entry to "released" with the YouTube videoId.
+  const released = [
+    {
+      songId: "0lUJcLKIt0o",
+      title: "Let My People Go",
+      state: "released",
+      lyrics: "",
+      artwork: "",
+      sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o",
+      publishedAt: "2026-05-02T12:40:33Z",
+      traceId: "youtube:0lUJcLKIt0o"
+    }
+  ];
+  const comingSoon = [
+    {
+      songId: "let-my-people-go",
+      title: "Let My People Go",
+      state: "coming_soon",
+      lyrics: "Go DOWN, Moses!\nBurn through Egypt's gates,",
+      artwork: "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg",
+      sourceUrl: "",
+      publishedAt: ""
+    },
+    {
+      songId: "another-track",
+      title: "Another Track",
+      state: "coming_soon",
+      lyrics: "untouched lyrics",
+      artwork: ""
+    }
+  ];
+  const out = pub.mergeReleasedWithComingSoon(released, comingSoon);
+  assertEqual(out.released.length, 1, "single merged released entry");
+  const merged = out.released[0];
+  assertEqual(merged.songId, "let-my-people-go", "merged keeps shield-cli kebab songId");
+  assertEqual(merged.videoId, "0lUJcLKIt0o", "merged carries YouTube videoId");
+  assertEqual(merged.state, "released", "merged state is released");
+  assertEqual(merged.lyrics, "Go DOWN, Moses!\nBurn through Egypt's gates,", "merged keeps curated lyrics");
+  assertEqual(merged.artwork, "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg", "merged keeps curated artwork");
+  assertEqual(merged.sourceUrl, "https://www.youtube.com/watch?v=0lUJcLKIt0o", "merged keeps YouTube watch URL");
+  assertEqual(merged.publishedAt, "2026-05-02T12:40:33Z", "merged keeps YouTube publishedAt");
+  assertEqual(out.comingSoon.length, 1, "matched coming_soon record removed");
+  assertEqual(out.comingSoon[0].songId, "another-track", "unmatched coming_soon record retained");
+}
+
+// --- mergeReleasedWithComingSoon: no match leaves released unchanged but adds videoId ---
+{
+  const released = [{ songId: "abc123", title: "Standalone", state: "released", lyrics: "" }];
+  const comingSoon = [{ songId: "another", title: "Different", state: "coming_soon", lyrics: "y" }];
+  const out = pub.mergeReleasedWithComingSoon(released, comingSoon);
+  assertEqual(out.released.length, 1, "released count unchanged");
+  assertEqual(out.released[0].songId, "abc123", "songId unchanged when no match");
+  assertEqual(out.released[0].videoId, "abc123", "videoId defaults to songId");
+  assertEqual(out.comingSoon.length, 1, "comingSoon untouched when no match");
+}
+
+// --- mergeReleasedWithComingSoon: empty inputs are safe ---
+{
+  assertEqual(
+    pub.mergeReleasedWithComingSoon([], []),
+    { released: [], comingSoon: [] },
+    "two empty inputs -> two empty outputs"
+  );
+  const out = pub.mergeReleasedWithComingSoon([{ songId: "x", title: "X" }], []);
+  assertEqual(out.released[0].videoId, "x", "videoId still set when comingSoon empty");
+}
+
+// --- buildSiteArtifactFromEvents: featuredRelease and released[] reflect the merge ---
+{
+  const songs = [
+    {
+      songId: "let-my-people-go",
+      title: "Let My People Go",
+      state: "coming_soon",
+      lyrics: "Go DOWN, Moses!\nBurn through Egypt's gates,",
+      artwork: "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg"
+    },
+    {
+      songId: "0lUJcLKIt0o",
+      title: "Let My People Go",
+      state: "released",
+      lyrics: "",
+      artwork: "",
+      sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o",
+      publishedAt: "2026-05-02T12:40:33Z"
+    }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events: [], songs });
+  assertEqual(out.released.length, 1, "released[] dedupes via merge");
+  const fr = out.homepage.featuredRelease;
+  assertEqual(fr.title, "Let My People Go", "featuredRelease title is the merged value");
+  assertEqual(fr.videoId, "0lUJcLKIt0o", "featuredRelease videoId is the YouTube id");
+  assertEqual(fr.songId, "let-my-people-go", "featuredRelease songId is shield-cli kebab id");
+  assertEqual(fr.lyrics, "Go DOWN, Moses!\nBurn through Egypt's gates,", "featuredRelease has curated lyrics");
+  assertEqual(
+    fr.artwork,
+    "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg",
+    "featuredRelease has curated artwork"
+  );
 }
 
 // --- parseAutoApproveSources: empty / malformed inputs ---
