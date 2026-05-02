@@ -481,6 +481,18 @@ function normalizeSongTableItem(item) {
     : isValidArtworkUrl(candidateArtwork) ? candidateArtwork
     : "";
 
+  // Scripture and references are curated. shield-cli doesn't write
+  // these yet; for now they get added directly to DynamoDB. The
+  // publisher passes them through verbatim so the song-meanings
+  // dossier can render them. If absent on the record, default to
+  // empty values so the website fallback (no reference shown) wins.
+  const reference = String(item.reference || "").trim();
+  const scriptureRaw = item.scripture && typeof item.scripture === "object" ? item.scripture : null;
+  const scripture = scriptureRaw ? {
+    ref: String(scriptureRaw.ref || "").trim(),
+    quote: String(scriptureRaw.quote || "").trim()
+  } : { ref: "", quote: "" };
+
   return {
     songId,
     title,
@@ -491,6 +503,8 @@ function normalizeSongTableItem(item) {
     artwork,
     lyrics,
     songMeaning,
+    reference,
+    scripture,
     updatedAt: String(item.updatedAt || item.createdAt || item.publishedAt || "").trim(),
     contentHash: String(item.contentHash || "").trim(),
     releaseDetected: Boolean(item.releaseDetected),
@@ -555,6 +569,13 @@ function mergeReleasedWithComingSoon(released, comingSoon) {
       return { ...rel, videoId: youtubeVideoId };
     }
     usedComingSoonIds.add(match.songId);
+    // Prefer shield-cli's curated content but fall back to whatever
+    // the release-detector record produced (post-sanitization). For
+    // scripture, prefer the curated record; the release-detector
+    // never produces scripture data.
+    const mergedScripture = (match.scripture && match.scripture.ref)
+      ? match.scripture
+      : (rel.scripture || { ref: "", quote: "" });
     return {
       ...match,
       state: "released",
@@ -563,11 +584,11 @@ function mergeReleasedWithComingSoon(released, comingSoon) {
       publishedAt: rel.publishedAt || match.publishedAt || "",
       traceId: rel.traceId || match.traceId || "",
       updatedAt: rel.updatedAt || match.updatedAt || "",
-      // Prefer shield-cli's curated content but fall back to whatever
-      // the release-detector record produced (post-sanitization).
       lyrics: match.lyrics || rel.lyrics || "",
       artwork: match.artwork || rel.artwork || "",
       songMeaning: match.songMeaning || rel.songMeaning || "",
+      reference: match.reference || rel.reference || "",
+      scripture: mergedScripture,
       title: match.title || rel.title || ""
     };
   });
@@ -608,6 +629,14 @@ function buildSongView(song, latestEvent = null) {
     }
   }
   const rawTitle = song.title || latestEvent?.title || "";
+  // Scripture and reference are curated and live on the song record;
+  // events do not carry them. Pass through whatever the song has.
+  const reference = String(song.reference || "").trim();
+  const scripture = song.scripture && typeof song.scripture === "object" ? {
+    ref: String(song.scripture.ref || "").trim(),
+    quote: String(song.scripture.quote || "").trim()
+  } : { ref: "", quote: "" };
+
   return {
     songId: song.songId || latestEvent?.songId || "",
     videoId: song.videoId || "",
@@ -619,6 +648,8 @@ function buildSongView(song, latestEvent = null) {
     artwork,
     lyrics,
     songMeaning,
+    reference,
+    scripture,
     updatedAt: latestEvent?.timestamp || song.updatedAt || song.publishedAt || "",
     contentHash: song.contentHash || ""
   };

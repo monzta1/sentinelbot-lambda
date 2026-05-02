@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.8.2 - May 2026
+- Site publisher now reads `reference` and `scripture` fields off the song record and emits them on `released[]` entries plus `homepage.featuredRelease`. shield-cli does not yet write these (a follow-up), so for now they are populated directly via DynamoDB and the publisher passes them through verbatim. The merge helper preserves the curated record's scripture when promoting a coming-soon song to released.
+- Added 8 tests for scripture passthrough on `normalizeSongTableItem` and the merge path; default-empties when absent.
+
 ## v1.8.1 - May 2026
 - Site publisher now loads release events from `shieldbearer-sentinel-logs` (pk pattern `releaseevent#youtube#<videoId>`) in addition to `EventStream`. The legacy table holds the long history of detected releases (~547 records); without this loader the timeline showed only the 26 EventStream entries (mostly shield-cli SONG_UPDATED ticks) and lost a year of release context.
 - Added `mergeReleasedWithComingSoon` to dedupe songs across states by normalized title. shield-cli ingests songs as `coming_soon` with curated lyrics and artwork; the release-detector creates a separate `released` record keyed by YouTube videoId. Without merge the same song appeared twice with different metadata. Merge promotes the curated record to released, attaches the YouTube videoId/sourceUrl/publishedAt, and drops the YouTube-only twin from comingSoon.

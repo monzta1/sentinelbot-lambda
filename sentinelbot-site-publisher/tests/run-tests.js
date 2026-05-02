@@ -627,6 +627,64 @@ function assertEqual(actual, expected, label) {
   assert("albumId" in e && "isShort" in e && "contentFormat" in e, "event has album/short defaults timeline reads");
 }
 
+// --- normalizeSongTableItem: scripture and reference pass through ---
+{
+  const recordWithScripture = {
+    songId: "let-my-people-go",
+    title: "Let My People Go",
+    status: "released",
+    reference: "Exodus 5:1 | Exodus 7:16",
+    scripture: {
+      ref: "Exodus 5:1",
+      quote: "Thus says the Lord, the God of Israel, 'Let my people go...'"
+    }
+  };
+  const out = pub.normalizeSongTableItem(recordWithScripture);
+  assertEqual(out.reference, "Exodus 5:1 | Exodus 7:16", "reference passes through");
+  assertEqual(out.scripture.ref, "Exodus 5:1", "scripture.ref passes through");
+  assert(out.scripture.quote.indexOf("Let my people go") !== -1, "scripture.quote passes through");
+}
+
+// --- normalizeSongTableItem: missing scripture defaults to safe empties ---
+{
+  const recordWithoutScripture = {
+    songId: "x",
+    title: "X",
+    status: "released"
+  };
+  const out = pub.normalizeSongTableItem(recordWithoutScripture);
+  assertEqual(out.reference, "", "missing reference -> empty string");
+  assertEqual(out.scripture, { ref: "", quote: "" }, "missing scripture -> empty object");
+}
+
+// --- mergeReleasedWithComingSoon: scripture from curated record wins ---
+{
+  const released = [
+    {
+      songId: "0lUJcLKIt0o",
+      title: "Let My People Go",
+      state: "released",
+      sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o",
+      reference: "",
+      scripture: { ref: "", quote: "" }
+    }
+  ];
+  const comingSoon = [
+    {
+      songId: "let-my-people-go",
+      title: "Let My People Go",
+      state: "coming_soon",
+      lyrics: "real lyrics",
+      reference: "Exodus 5:1",
+      scripture: { ref: "Exodus 5:1", quote: "Let my people go..." }
+    }
+  ];
+  const out = pub.mergeReleasedWithComingSoon(released, comingSoon);
+  assertEqual(out.released.length, 1, "merged into single entry");
+  assertEqual(out.released[0].reference, "Exodus 5:1", "merged reference from curated record");
+  assertEqual(out.released[0].scripture.ref, "Exodus 5:1", "merged scripture.ref from curated record");
+}
+
 // --- mergeReleasedWithComingSoon: merge same-title songs across states ---
 {
   // Real bug: shield-cli wrote let-my-people-go (coming_soon) with
