@@ -7,6 +7,26 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.8.0 - May 2026
+- Site publisher hardened against release-detector data quality bugs that produced a broken homepage / lyrics page / timeline on the first Saturday-morning auto-publish
+  - `cleanReleaseTitle` strips "Shieldbearer - " prefix and " | <marketing>" suffix from titles so the homepage shows just the song name
+  - `isValidArtworkUrl` rejects YouTube watch URLs from the artwork field; the website renderer falls back to the img.youtube.com thumbnail
+  - `cleanLyrics` drops description-shaped text written into the lyrics field by the release detector (equality with description, YouTube URLs, "Shieldbearer" prefix, "New Single YYYY" marketing copy, #Shieldbearer hashtags, length cap)
+  - `eventsForArtifact` now emits the fields the timeline page reads (id, title, publishedAt, sourceUrl, plus album/short metadata) instead of a 4-field stub; filtered to events with sourceUrl so SONG_UPDATED ticks from shield-cli stop crowding actual releases
+  - `normalizeReleaseEventItem` distinguishes event timestamp from release publishedAt so the timeline shows when YouTube went live, not when the detector ran
+- Auto-approve path added for trusted sources so the EventBridge cron-driven publisher run can push without manual approval. Off by default: empty `AUTO_APPROVE_SOURCES` env var is the same as today's manual-approval-only behavior. Set `AUTO_APPROVE_SOURCES=youtube` to opt in once the data quality issues are resolved at the detector layer.
+- Added Saturday 9am EDT EventBridge schedule (detector + publisher with the standard 15-minute gap) to fill the gap between the Friday evening cycle and the next Friday cycle. Pre-existing Friday and late-Saturday rules remain in place. Schedule lives in the AWS console for now; persisting in IaC is a follow-up.
+- 23 new pure-function tests covering each of the helpers above
+
+## v1.7.4 - April 2026
+- Tightened the system prompt with three accuracy fixes after a fan exchange caught the bot guessing
+- GUITARS section now states tuning explicitly: Drop C or Drop D for heavy material, standard for ballads and worship; deep gear specs deferred to a future Mark II memory pack
+- Added a PRODUCTION PROCESS block clarifying that Suno is used in ideation only and never ships as is
+- Added a VOCALS block stating lead vocals are AI generated unless specified, with Moncy on backing vocals for Quake and Celestial Shield
+- Equipment block in the character profile now references the planned Mark II per-guitar gear pack
+- Added dedicated cached answers for tuning, AI vocals, and Suno usage so these questions short-circuit the LLM and stay deterministic
+- Fixed cache matcher bug where "what tuning do they use for their guitars" was folding into the "what guitar does he play" cache and answering with the brand
+
 ## v1.7.3 - April 2026
 - Added `TODO.md` at the repo root with an honest backlog of future enhancements grouped by pipeline correctness, cost/observability, capability, test coverage, schedule/deploy
 

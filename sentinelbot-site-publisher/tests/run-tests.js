@@ -324,13 +324,17 @@ function assertEqual(actual, expected, label) {
 
 // --- buildSiteArtifactFromEvents: duplicate songId events keep only latest ---
 {
+  // Both events carry sourceUrl since the timeline filter requires it.
+  // Dedup happens at the song level, not the events level; both events
+  // remain in the events stream so the timeline can still show two
+  // chronologically-distinct release records for the same songId.
   const events = [
-    { eventId: "e1", songId: "abc", title: "T", eventType: "SONG_RELEASED", source: "youtube", timestamp: "2026-04-25T22:00:00Z", stateAfter: "released" },
-    { eventId: "e2", songId: "abc", title: "T", eventType: "SONG_UPDATED", source: "youtube", timestamp: "2026-04-25T20:00:00Z", stateAfter: "released" }
+    { eventId: "e1", songId: "abc", title: "T", eventType: "SONG_RELEASED", source: "youtube", timestamp: "2026-04-25T22:00:00Z", stateAfter: "released", sourceUrl: "https://www.youtube.com/watch?v=abc" },
+    { eventId: "e2", songId: "abc", title: "T", eventType: "SONG_UPDATED", source: "youtube", timestamp: "2026-04-25T20:00:00Z", stateAfter: "released", sourceUrl: "https://www.youtube.com/watch?v=abc" }
   ];
   const out = pub.buildSiteArtifactFromEvents({ events, songs: [] });
   assertEqual(out.released.length, 1, "duplicate songId -> only one entry");
-  assertEqual(out.events.length, 2, "all events retained in events stream");
+  assertEqual(out.events.length, 2, "release events retained in events stream");
 }
 
 // --- buildSiteArtifactFromEvents: duplicate titles keep first releaseIndex entry ---
@@ -400,6 +404,262 @@ function assertEqual(actual, expected, label) {
   assertEqual(view.lyrics, "from payload", "lyrics pulled from event payload");
   assertEqual(view.artwork, "https://x/art.jpg", "artwork pulled from event payload");
   assertEqual(view.title, "From Event", "title falls back to event title");
+}
+
+// --- cleanReleaseTitle: strips Shieldbearer prefix and pipe suffix ---
+{
+  assertEqual(pub.cleanReleaseTitle(""), "", "empty input -> empty");
+  assertEqual(pub.cleanReleaseTitle(null), "", "null input -> empty");
+  assertEqual(
+    pub.cleanReleaseTitle("Shieldbearer - Let My People Go | Heavy Christian Metal Anthem"),
+    "Let My People Go",
+    "strips 'Shieldbearer - ' prefix and ' | ...' suffix"
+  );
+  assertEqual(
+    pub.cleanReleaseTitle("SHIELDBEARER – Sentinels"),
+    "Sentinels",
+    "case-insensitive prefix, en-dash variant"
+  );
+  assertEqual(
+    pub.cleanReleaseTitle("Let My People Go"),
+    "Let My People Go",
+    "clean title left alone"
+  );
+  assertEqual(
+    pub.cleanReleaseTitle("\"Galilean\""),
+    "Galilean",
+    "wrapping double-quotes stripped"
+  );
+  assertEqual(
+    pub.cleanReleaseTitle("Some Track | with pipe"),
+    "Some Track",
+    "non-Shieldbearer title still cleans pipe suffix"
+  );
+}
+
+// --- isValidArtworkUrl: rejects YouTube watch URLs and non-http ---
+{
+  assert(!pub.isValidArtworkUrl(""), "empty -> not valid");
+  assert(!pub.isValidArtworkUrl(null), "null -> not valid");
+  assert(!pub.isValidArtworkUrl("not a url"), "non-URL string -> not valid");
+  assert(!pub.isValidArtworkUrl("ftp://example.com/x.jpg"), "non-http scheme -> not valid");
+  assert(
+    !pub.isValidArtworkUrl("https://www.youtube.com/watch?v=abc"),
+    "YouTube watch URL -> not valid"
+  );
+  assert(
+    !pub.isValidArtworkUrl("https://youtube.com/watch?v=abc"),
+    "YouTube watch URL without www -> not valid"
+  );
+  assert(
+    !pub.isValidArtworkUrl("https://youtu.be/abc"),
+    "youtu.be share URL -> not valid"
+  );
+  assert(
+    pub.isValidArtworkUrl("https://img.youtube.com/vi/abc/hqdefault.jpg"),
+    "YouTube thumbnail URL -> valid"
+  );
+  assert(
+    pub.isValidArtworkUrl("https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg"),
+    "project CDN URL -> valid"
+  );
+}
+
+// --- cleanLyrics: drops description-shaped text ---
+{
+  assertEqual(pub.cleanLyrics(""), "", "empty -> empty");
+  assertEqual(pub.cleanLyrics(null), "", "null -> empty");
+  const realLyrics = "Go DOWN, Moses!\nBurn through Egypt's gates,\nPharaoh's throne is shaking,";
+  assertEqual(pub.cleanLyrics(realLyrics), realLyrics, "real lyrics pass through");
+  assertEqual(
+    pub.cleanLyrics(realLyrics, { description: realLyrics }),
+    "",
+    "lyrics equal to description -> dropped"
+  );
+  const descriptionWithUrl = "Some marketing copy.\nWatch: https://youtube.com/watch?v=x";
+  assertEqual(
+    pub.cleanLyrics(descriptionWithUrl),
+    "",
+    "text with YouTube URL -> dropped"
+  );
+  assertEqual(
+    pub.cleanLyrics("Shieldbearer - \"Let My People Go\"\nA cry that shook a nation."),
+    "",
+    "text starting with 'Shieldbearer' -> dropped (artist name in description)"
+  );
+  assertEqual(
+    pub.cleanLyrics("A cry that shook a nation. New Single 2026 incoming."),
+    "",
+    "text mentioning 'new single 2026' -> dropped (marketing copy)"
+  );
+  assertEqual(
+    pub.cleanLyrics("Real lyrics here.\n#Shieldbearer #ChristianMetal"),
+    "",
+    "text with #Shieldbearer hashtag -> dropped (promotional)"
+  );
+  const longText = "a".repeat(8001);
+  assertEqual(pub.cleanLyrics(longText), "", "text > 8000 chars -> dropped");
+  // The previous lyrics pass-through case where lyrics legitimately
+  // include a song title is preserved (no title-equality check).
+  const lyricsWithTitle = "Galilean rose at dawn\nGalilean walked the shore\n";
+  assertEqual(
+    pub.cleanLyrics(lyricsWithTitle),
+    lyricsWithTitle.trim(),
+    "lyrics that legitimately include the song title pass through (trimmed)"
+  );
+}
+
+// --- normalizeSongTableItem: applies title + lyrics + artwork sanitization ---
+{
+  // Real bug: detector wrote YouTube description into lyrics, YouTube
+  // watch URL into payload artworkUrl, full YouTube title into title.
+  const dirtyDetectorRecord = {
+    songId: "0lUJcLKIt0o",
+    title: "Shieldbearer - Let My People Go | Heavy Christian Metal Anthem",
+    status: "released",
+    lyrics: "Shieldbearer - \"Let My People Go\"\nNew Single 2026\nhttps://youtube.com/watch?v=x",
+    description: "Shieldbearer - \"Let My People Go\"\nNew Single 2026\nhttps://youtube.com/watch?v=x",
+    artworkUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o"
+  };
+  const out = pub.normalizeSongTableItem(dirtyDetectorRecord);
+  assertEqual(out.title, "Let My People Go", "dirty title cleaned");
+  assertEqual(out.lyrics, "", "dirty lyrics dropped");
+  assertEqual(out.artwork, "", "YouTube watch URL artwork dropped");
+
+  // Clean shield-cli record passes through untouched.
+  const cleanShieldCliRecord = {
+    songId: "let-my-people-go",
+    title: "Let My People Go",
+    status: "released",
+    lyrics: "Go DOWN, Moses!\nBurn through Egypt's gates,",
+    artworkUrl: "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg"
+  };
+  const clean = pub.normalizeSongTableItem(cleanShieldCliRecord);
+  assertEqual(clean.title, "Let My People Go", "clean title preserved");
+  assertEqual(clean.lyrics, "Go DOWN, Moses!\nBurn through Egypt's gates,", "clean lyrics preserved");
+  assertEqual(
+    clean.artwork,
+    "https://shieldbearerusa.com/images/signal-room/let-my-people-go.jpg",
+    "clean artwork URL preserved"
+  );
+}
+
+// --- buildSongView: same sanitization on event payload values ---
+{
+  const sparseSong = { songId: "0lUJcLKIt0o", title: "" };
+  const dirtyEvent = {
+    songId: "0lUJcLKIt0o",
+    title: "Shieldbearer - Let My People Go | Heavy Christian Metal Anthem",
+    publishedAt: "2026-05-02T12:40:33Z",
+    timestamp: "2026-05-02T13:00:08.851Z",
+    sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o",
+    payload: {
+      lyrics: "Shieldbearer - \"Let My People Go\"\nhttps://youtube.com/watch?v=x",
+      description: "Shieldbearer - \"Let My People Go\"\nhttps://youtube.com/watch?v=x",
+      artworkUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o"
+    }
+  };
+  const view = pub.buildSongView(sparseSong, dirtyEvent);
+  assertEqual(view.title, "Let My People Go", "buildSongView strips dirty title");
+  assertEqual(view.lyrics, "", "buildSongView drops description-shaped lyrics");
+  assertEqual(view.artwork, "", "buildSongView drops YouTube watch URL artwork");
+  assertEqual(
+    view.publishedAt,
+    "2026-05-02T12:40:33Z",
+    "buildSongView prefers payload.publishedAt over event timestamp"
+  );
+}
+
+// --- eventsForArtifact: includes website-required fields ---
+{
+  // Real regression: prior emitter stripped events to 4 fields, which
+  // broke /timeline (it reads id, title, publishedAt, sourceUrl).
+  const events = [
+    {
+      songId: "0lUJcLKIt0o",
+      eventId: "evt1",
+      eventType: "SONG_RELEASED",
+      stateAfter: "released",
+      title: "Shieldbearer - Let My People Go | Heavy Christian Metal Anthem",
+      timestamp: "2026-05-02T13:00:08.851Z",
+      publishedAt: "2026-05-02T12:40:33Z",
+      sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o",
+      source: "release-detector-youtube",
+      payload: {}
+    },
+    {
+      // SONG_UPDATED tick from shield-cli with no sourceUrl. Must be
+      // filtered out so it does not crowd the timeline.
+      songId: "let-my-people-go",
+      eventId: "evt2",
+      eventType: "SONG_UPDATED",
+      stateAfter: "draft",
+      title: "Let My People Go",
+      timestamp: "2026-04-25T20:44:23.351Z",
+      publishedAt: "2026-04-25T20:44:23.351Z",
+      sourceUrl: "",
+      source: "shield-ingest-cli",
+      payload: {}
+    }
+  ];
+  const out = pub.buildSiteArtifactFromEvents({ events, songs: [] });
+  assert(Array.isArray(out.events), "artifact has events array");
+  assertEqual(out.events.length, 1, "events without sourceUrl filtered out");
+  const e = out.events[0];
+  assertEqual(e.id, "0lUJcLKIt0o", "event has id (timeline reads this)");
+  assertEqual(e.title, "Let My People Go", "event title is cleaned");
+  assertEqual(e.publishedAt, "2026-05-02T12:40:33Z", "event publishedAt is the platform-publish time, not detector run time");
+  assertEqual(e.sourceUrl, "https://www.youtube.com/watch?v=0lUJcLKIt0o", "event sourceUrl preserved");
+  assert("albumId" in e && "isShort" in e && "contentFormat" in e, "event has album/short defaults timeline reads");
+}
+
+// --- parseAutoApproveSources: empty / malformed inputs ---
+{
+  assertEqual(pub.parseAutoApproveSources(""), [], "empty -> empty list");
+  assertEqual(pub.parseAutoApproveSources(undefined), [], "undefined -> empty list");
+  assertEqual(pub.parseAutoApproveSources(null), [], "null -> empty list");
+  assertEqual(pub.parseAutoApproveSources("   "), [], "whitespace -> empty list");
+}
+
+// --- parseAutoApproveSources: comma-separated, trimmed, lowercased ---
+{
+  assertEqual(pub.parseAutoApproveSources("youtube"), ["youtube"], "single source");
+  assertEqual(pub.parseAutoApproveSources("youtube,spotify"), ["youtube", "spotify"], "two sources");
+  assertEqual(pub.parseAutoApproveSources("  YouTube , Spotify  "), ["youtube", "spotify"], "trim + lowercase");
+  assertEqual(pub.parseAutoApproveSources("a,,b"), ["a", "b"], "drops empty entries");
+}
+
+// --- isCronInvocation: detects EventBridge scheduled events ---
+{
+  assert(
+    pub.isCronInvocation({ source: "aws.events", "detail-type": "Scheduled Event" }),
+    "aws.events + Scheduled Event = cron"
+  );
+  assert(
+    !pub.isCronInvocation({ source: "aws.events" }),
+    "aws.events without Scheduled Event != cron"
+  );
+  assert(!pub.isCronInvocation({ source: "manual" }), "manual source != cron");
+  assert(!pub.isCronInvocation({}), "empty event != cron");
+  assert(!pub.isCronInvocation(null), "null event != cron");
+  assert(
+    pub.isCronInvocation({ source: "aws.events", detailType: "Scheduled Event" }),
+    "camelCase detailType also accepted"
+  );
+}
+
+// --- shouldAutoApprove: cron + allowed source = approve ---
+{
+  const cronEvent = { source: "aws.events", "detail-type": "Scheduled Event" };
+  const manualEvent = { source: "manual" };
+
+  assert(!pub.shouldAutoApprove(manualEvent, "youtube", ["youtube"]), "manual invoke does NOT auto-approve");
+  assert(!pub.shouldAutoApprove(cronEvent, "youtube", []), "empty allowlist does NOT auto-approve");
+  assert(!pub.shouldAutoApprove(cronEvent, "spotify", ["youtube"]), "source not in allowlist does NOT auto-approve");
+  assert(pub.shouldAutoApprove(cronEvent, "youtube", ["youtube"]), "cron + source in allowlist DOES auto-approve");
+  assert(pub.shouldAutoApprove(cronEvent, "YOUTUBE", ["youtube"]), "case-insensitive source match");
+  assert(!pub.shouldAutoApprove(cronEvent, "", ["youtube"]), "empty source does NOT auto-approve");
+  assert(!pub.shouldAutoApprove(cronEvent, "youtube", "youtube"), "non-array allowlist does NOT auto-approve");
 }
 
 console.log("\n=========================================");

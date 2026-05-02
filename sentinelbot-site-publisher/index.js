@@ -15,6 +15,7 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "main";
 const SITE_JSON_PATH = process.env.SITE_JSON_PATH || "site.json";
 const EVENT_STREAM_PK = "eventstream";
 const ALLOWED_SOURCES = parseAllowedSources(process.env.ALLOWED_SOURCES || "[\"youtube\"]");
+const AUTO_APPROVE_SOURCES = parseAutoApproveSources(process.env.AUTO_APPROVE_SOURCES || "");
 const EVENT_STREAM_PAGE_SIZE = Math.max(1, Number.parseInt(process.env.EVENT_STREAM_PAGE_SIZE || "100", 10) || 100);
 const SONGS_TABLE_PAGE_SIZE = Math.max(1, Number.parseInt(process.env.SONGS_TABLE_PAGE_SIZE || "100", 10) || 100);
 const GITHUB_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.GITHUB_MAX_ATTEMPTS || "5", 10) || 5);
@@ -54,6 +55,83 @@ function parseAllowedSources(value) {
     // default below
   }
   return ["youtube"];
+}
+
+function parseAutoApproveSources(value) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  return value
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isCronInvocation(event) {
+  if (!event || typeof event !== "object") return false;
+  const detailType = event["detail-type"] || event.detailType;
+  return event.source === "aws.events" && detailType === "Scheduled Event";
+}
+
+function shouldAutoApprove(event, releaseSource, autoApproveSources) {
+  if (!isCronInvocation(event)) return false;
+  if (!Array.isArray(autoApproveSources) || autoApproveSources.length === 0) return false;
+  const normalized = String(releaseSource || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return autoApproveSources.includes(normalized);
+}
+
+function cleanReleaseTitle(value) {
+  // YouTube titles tend to be "Shieldbearer - <song> | <marketing>".
+  // Strip the artist prefix and the trailing pipe-suffix so the
+  // homepage and timeline display the song title alone.
+  let title = String(value || "").trim();
+  if (!title) return "";
+  title = title.replace(/^shieldbearer\s*[-–—]\s*/i, "").trim();
+  const pipeIndex = title.indexOf(" | ");
+  if (pipeIndex > 0) {
+    title = title.slice(0, pipeIndex).trim();
+  }
+  // Strip surrounding double quotes left over from titles like
+  // "Let My People Go" written into the YouTube title field.
+  if (title.length >= 2 && title.startsWith("\"") && title.endsWith("\"")) {
+    title = title.slice(1, -1).trim();
+  }
+  return title;
+}
+
+function isValidArtworkUrl(value) {
+  const url = String(value || "").trim();
+  if (!url) return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  // The release-detector occasionally writes the YouTube watch URL
+  // into the artworkUrl field on the event payload. That is a video
+  // page, not an image, so it must be rejected. Real artwork comes
+  // from img.youtube.com, the project CDN, or shield-cli uploads.
+  if (/^https?:\/\/(www\.)?youtube\.com\/watch\b/i.test(url)) return false;
+  if (/^https?:\/\/youtu\.be\//i.test(url) && !/\.(jpg|jpeg|png|webp|gif)(\?|$)/i.test(url)) return false;
+  return true;
+}
+
+function cleanLyrics(value, options = {}) {
+  const lyrics = String(value || "").trim();
+  if (!lyrics) return "";
+  // The release-detector copies the YouTube description into the
+  // song record's lyrics field. Real verse-line lyrics never:
+  //   - equal the song's separate description field
+  //   - contain a YouTube URL
+  //   - start with the artist name "Shieldbearer"
+  //   - mention "new single 2026" / "new ep" / "new album YYYY" (marketing copy)
+  //   - contain promotional hashtags like #Shieldbearer
+  //   - exceed a generous 8000-char length cap
+  // Anything that hits any of those signals gets dropped so the
+  // website's static fallback or a shield-cli ingest wins.
+  const description = String(options.description || "").trim();
+  if (description && lyrics === description) return "";
+  if (/youtube\.com|youtu\.be/i.test(lyrics)) return "";
+  if (/^shieldbearer\b/i.test(lyrics)) return "";
+  if (/\bnew\s+(single|ep|album)\s+\d{4}/i.test(lyrics)) return "";
+  if (/#shieldbearer\b/i.test(lyrics)) return "";
+  if (lyrics.length > 8000) return "";
+  return lyrics;
 }
 
 function getArtifactReleaseId(siteArtifact) {
@@ -301,8 +379,13 @@ function normalizeReleaseEventItem(item) {
   const payload = item?.payload && typeof item.payload === "object" ? item.payload : null;
   const eventType = String(item?.eventType || payload?.eventType || "").trim();
   const songId = String(item?.songId || payload?.songId || payload?.id || item?.id || "").trim();
-  const title = String(item?.title || payload?.title || "").trim();
-  const timestamp = String(item?.timestamp || payload?.timestamp || payload?.publishedAt || item?.publishedAt || item?.createdAt || item?.updatedAt || "").trim();
+  const rawTitle = String(item?.title || payload?.title || "").trim();
+  const title = cleanReleaseTitle(rawTitle);
+  const timestamp = String(item?.timestamp || payload?.timestamp || item?.createdAt || item?.updatedAt || "").trim();
+  // publishedAt is when the song went live on the source platform.
+  // It may differ from the EVENT timestamp (when the detector ran),
+  // and the timeline page renders publishedAt, so prefer that.
+  const publishedAt = String(payload?.publishedAt || item?.publishedAt || timestamp || "").trim();
   const source = String(item?.source || payload?.source || "youtube").trim();
   const sourceUrl = String(item?.sourceUrl || payload?.sourceUrl || "").trim();
   const traceId = String(item?.traceId || payload?.traceId || item?.id || "").trim();
@@ -335,7 +418,7 @@ function normalizeReleaseEventItem(item) {
     traceId,
     createdAt: String(item?.createdAt || "").trim(),
     updatedAt: String(item?.updatedAt || "").trim(),
-    publishedAt: timestamp,
+    publishedAt,
     payload
   };
 }
@@ -364,11 +447,16 @@ function normalizeSongTableItem(item) {
 
   const status = normalizeStateName(item.status) || (item.releaseDetected ? "released" : "draft");
 
+  const rawTitle = String(item.title || "").trim();
+  const title = cleanReleaseTitle(rawTitle);
+
   // Lyrics + meaning may live under either shield-cli field names
   // (lyrics, songmeaning lowercase) or release-detector field names
   // (songMeaning camelCase, songContextMeaning/Summary). Accept all and
-  // emit canonical camelCase.
-  const lyrics = String(item.lyrics || "").trim();
+  // emit canonical camelCase. cleanLyrics drops description-shaped
+  // text the release-detector occasionally writes into `lyrics`.
+  const description = String(item.description || "").trim();
+  const lyrics = cleanLyrics(item.lyrics, { description });
   const songMeaning = String(
     item.songMeaning ||
     item.songmeaning ||
@@ -377,15 +465,18 @@ function normalizeSongTableItem(item) {
     ""
   ).trim();
   // Shield-cli writes the source filename into `artwork` and the
-  // published CDN URL into `artworkUrl`. Prefer the URL; fall back to
-  // `artwork` only if it actually looks like a URL.
-  const rawArtwork = String(item.artwork || "").trim();
-  const artwork = String(item.artworkUrl || "").trim()
-    || (/^https?:\/\//i.test(rawArtwork) ? rawArtwork : "");
+  // published CDN URL into `artworkUrl`. Prefer a valid image URL
+  // from either, reject anything else (e.g. a YouTube watch URL the
+  // release-detector sometimes writes into artworkUrl).
+  const candidateArtworkUrl = String(item.artworkUrl || "").trim();
+  const candidateArtwork = String(item.artwork || "").trim();
+  const artwork = isValidArtworkUrl(candidateArtworkUrl) ? candidateArtworkUrl
+    : isValidArtworkUrl(candidateArtwork) ? candidateArtwork
+    : "";
 
   return {
     songId,
-    title: String(item.title || "").trim(),
+    title,
     state: status || "draft",
     traceId: String(item.traceId || "").trim(),
     publishedAt: String(item.publishedAt || "").trim(),
@@ -430,27 +521,34 @@ function buildSongView(song, latestEvent = null) {
     || "draft";
   const eventPayload = latestEvent?.payload || {};
   // Pull lyrics/songMeaning/artwork from event payload first (freshest),
-  // then song table. The website needs all three to render homepage and
-  // song-meanings dossiers.
-  const lyrics = String(eventPayload.lyrics || song.lyrics || "").trim();
+  // then song table. cleanLyrics drops description-shaped text the
+  // release-detector writes into payload.lyrics, so a clean shield-cli
+  // ingest can win even if it arrived first.
+  const description = String(eventPayload.description || song.description || "").trim();
+  const lyricsRaw = String(eventPayload.lyrics || song.lyrics || "").trim();
+  const lyrics = cleanLyrics(lyricsRaw, { description });
   const songMeaning = String(
     eventPayload.songMeaning ||
     song.songMeaning ||
     eventPayload.songContextMeaning ||
     ""
   ).trim();
-  const artwork = String(
-    eventPayload.artwork ||
-    eventPayload.artworkUrl ||
-    song.artwork ||
-    ""
-  ).trim();
+  const candidates = [eventPayload.artwork, eventPayload.artworkUrl, song.artwork];
+  let artwork = "";
+  for (const candidate of candidates) {
+    const value = String(candidate || "").trim();
+    if (value && isValidArtworkUrl(value)) {
+      artwork = value;
+      break;
+    }
+  }
+  const rawTitle = song.title || latestEvent?.title || "";
   return {
     songId: song.songId || latestEvent?.songId || "",
-    title: song.title || latestEvent?.title || "",
+    title: cleanReleaseTitle(rawTitle),
     state,
     traceId: latestEvent?.traceId || song.traceId || "",
-    publishedAt: latestEvent?.timestamp || song.publishedAt || "",
+    publishedAt: latestEvent?.publishedAt || song.publishedAt || latestEvent?.timestamp || "",
     sourceUrl: latestEvent?.sourceUrl || song.sourceUrl || "",
     artwork,
     lyrics,
@@ -535,12 +633,38 @@ function buildSiteArtifactFromEvents({ songs = [], events = [] } = {}) {
   const sourceUrl = latestReleased?.sourceUrl || latestEvent?.sourceUrl || "";
   const publishedAt = latestReleased?.publishedAt || latestEvent?.timestamp || latestEvent?.createdAt || "";
   const traceId = latestReleased?.traceId || latestEvent?.traceId || "";
-  const eventsForArtifact = orderedEvents.slice(0, 50).map((event) => ({
-    songId: event.songId || "",
-    eventType: event.eventType || "",
-    stateAfter: normalizeStateName(event.stateAfter) || "draft",
-    timestamp: event.timestamp || event.publishedAt || event.createdAt || ""
-  }));
+  // The timeline page reads id, title, publishedAt, sourceUrl, plus
+  // album/short metadata for filtering. Filter to events that have a
+  // sourceUrl (release events) so SONG_UPDATED ticks from shield-cli
+  // do not crowd out actual releases. Cap at 100 to keep the artifact
+  // size bounded while leaving plenty of room for a year of releases.
+  const eventsForArtifact = orderedEvents
+    .filter((event) => Boolean(event.sourceUrl))
+    .slice(0, 100)
+    .map((event) => {
+      const payload = event.payload || {};
+      return {
+        id: String(event.songId || event.eventId || "").trim(),
+        songId: event.songId || "",
+        eventType: event.eventType || "",
+        stateAfter: normalizeStateName(event.stateAfter) || "draft",
+        timestamp: event.timestamp || event.createdAt || "",
+        title: cleanReleaseTitle(event.title || ""),
+        publishedAt: event.publishedAt || event.timestamp || "",
+        sourceUrl: event.sourceUrl || "",
+        source: event.source || "",
+        // Default album/short metadata. The detector does not currently
+        // populate these, but the timeline page reads them defensively
+        // to filter out shorts and group album tracks.
+        albumId: String(payload.albumId || "").trim(),
+        albumTitle: String(payload.albumTitle || "").trim(),
+        albumUrl: String(payload.albumUrl || "").trim(),
+        videoType: String(payload.videoType || "").trim(),
+        isShort: payload.isShort === true,
+        contentFormat: String(payload.contentFormat || "full").trim(),
+        excludeFromTimeline: payload.excludeFromTimeline === true
+      };
+    });
 
   // featuredRelease drives the homepage's top-of-page release card.
   // Built from the latest released song so the page swaps automatically
@@ -851,7 +975,22 @@ exports.handler = async (event = {}) => {
       };
     }
 
-    if (!event.approved) {
+    let effectivelyApproved = Boolean(event.approved);
+    let autoApproved = false;
+    if (!effectivelyApproved && shouldAutoApprove(event, source, AUTO_APPROVE_SOURCES)) {
+      effectivelyApproved = true;
+      autoApproved = true;
+      logStage("publish-auto-approved", {
+        releaseId,
+        source,
+        autoApproveSources: AUTO_APPROVE_SOURCES,
+        invocationSource: event.source,
+        detailType: event["detail-type"] || event.detailType,
+        elapsedMs: Date.now() - startedAt
+      });
+    }
+
+    if (!effectivelyApproved) {
       logStage("publish-blocked-unapproved", {
         releaseId,
         artifactSize,
@@ -917,6 +1056,7 @@ exports.handler = async (event = {}) => {
       body: JSON.stringify({
         ok: true,
         dryRun: false,
+        autoApproved,
         releaseId,
         artifactSize,
         path: SITE_JSON_PATH,
@@ -962,6 +1102,12 @@ module.exports = {
   getArtifactSource,
   getArtifactReleaseId,
   parseAllowedSources,
+  parseAutoApproveSources,
+  isCronInvocation,
+  shouldAutoApprove,
+  cleanReleaseTitle,
+  isValidArtworkUrl,
+  cleanLyrics,
   compareReleaseEventsDesc,
   normalizeReleaseEventItem,
   normalizeSongTableItem,
