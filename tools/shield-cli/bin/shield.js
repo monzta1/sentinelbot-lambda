@@ -249,7 +249,10 @@ function parseSongFile(rawContent) {
   return {
     title: sections.title || null,
     songmeaning: sections.songmeaning || null,
-    lyrics: sections.lyrics || null
+    lyrics: sections.lyrics || null,
+    reference: sections.reference || null,
+    scriptureRef: sections.scriptureref || null,
+    scriptureQuote: sections.scripturequote || null
   };
 }
 
@@ -282,7 +285,12 @@ function buildContentHash(song) {
     lyrics: normalizeContentField(song.lyrics),
     songMeaning: normalizeContentField(song.songMeaning),
     songmeaning: normalizeContentField(song.songmeaning),
-    title: normalizeContentField(song.title)
+    title: normalizeContentField(song.title),
+    reference: normalizeContentField(song.reference),
+    scripture: song.scripture && typeof song.scripture === "object" ? {
+      ref: normalizeContentField(song.scripture.ref) || "",
+      quote: normalizeContentField(song.scripture.quote) || ""
+    } : null
   };
 
   const stablePayload = {
@@ -290,7 +298,9 @@ function buildContentHash(song) {
     lyrics: payload.lyrics,
     songMeaning: payload.songMeaning,
     songmeaning: payload.songmeaning,
-    title: payload.title
+    title: payload.title,
+    reference: payload.reference,
+    scripture: payload.scripture
   };
 
   return crypto.createHash("sha256").update(JSON.stringify(stablePayload)).digest("hex");
@@ -368,13 +378,27 @@ function buildSongContentPayload(filePath, parsed, slug) {
   const songMeaning = normalizeValue(parsed.songmeaning);
   const artworkPath = artworkFile ? path.join(path.dirname(filePath), artworkFile) : null;
   const artworkUrl = artworkPath ? publishArtwork(artworkPath, slug) : null;
+  // Reference is a free-form pipe-separated string ("Exodus 5:1 |
+  // Exodus 7:16"). Scripture is a structured { ref, quote } pair
+  // built from two separate template sections so the user can write
+  // a multi-line quote without escaping. Both default to null when
+  // the template did not include them, so existing templates without
+  // these sections still ingest cleanly.
+  const reference = normalizeValue(parsed.reference);
+  const scriptureRef = normalizeValue(parsed.scriptureRef);
+  const scriptureQuote = normalizeValue(parsed.scriptureQuote);
+  const scripture = (scriptureRef || scriptureQuote)
+    ? { ref: scriptureRef || "", quote: scriptureQuote || "" }
+    : null;
   return {
     lyrics,
     lyricsPreview: extractLyricsPreview(parsed.lyrics),
     songMeaning,
     songmeaning: songMeaning,
     artwork: artworkFile || null,
-    artworkUrl
+    artworkUrl,
+    reference,
+    scripture
   };
 }
 
@@ -436,6 +460,13 @@ function buildInsertItem(song, contentHash, nowIso) {
   if (normalizeValue(song.lyricsPreview)) item.lyricsPreview = normalizeValue(song.lyricsPreview);
   if (normalizeValue(song.artworkUrl)) item.artworkUrl = normalizeValue(song.artworkUrl);
   if (normalizeValue(song.artwork)) item.artwork = normalizeValue(song.artwork);
+  if (normalizeValue(song.reference)) item.reference = normalizeValue(song.reference);
+  if (song.scripture && typeof song.scripture === "object" && (song.scripture.ref || song.scripture.quote)) {
+    item.scripture = {
+      ref: String(song.scripture.ref || "").trim(),
+      quote: String(song.scripture.quote || "").trim()
+    };
+  }
 
   return item;
 }
@@ -465,6 +496,22 @@ function buildMergedUpdate(existing, song, contentHash, nowIso) {
   if (nextArtwork == null) {
     delete next.artworkUrl;
     delete next.artwork;
+  }
+
+  const nextReference = normalizeValue(song.reference);
+  if (nextReference != null) {
+    next.reference = nextReference;
+  } else {
+    delete next.reference;
+  }
+
+  if (song.scripture && typeof song.scripture === "object" && (song.scripture.ref || song.scripture.quote)) {
+    next.scripture = {
+      ref: String(song.scripture.ref || "").trim(),
+      quote: String(song.scripture.quote || "").trim()
+    };
+  } else {
+    delete next.scripture;
   }
 
   next.contentHash = contentHash;
@@ -560,6 +607,27 @@ async function writeUpdate(existing, song, contentHash, nowIso) {
     removeExpressions.push("#artwork");
   }
 
+  if (normalizeValue(song.reference) != null) {
+    expressionNames["#reference"] = "reference";
+    expressionValues[":reference"] = normalizeValue(song.reference);
+    setExpressions.push("#reference = :reference");
+  } else {
+    expressionNames["#reference"] = "reference";
+    removeExpressions.push("#reference");
+  }
+
+  if (song.scripture && typeof song.scripture === "object" && (song.scripture.ref || song.scripture.quote)) {
+    expressionNames["#scripture"] = "scripture";
+    expressionValues[":scripture"] = {
+      ref: String(song.scripture.ref || "").trim(),
+      quote: String(song.scripture.quote || "").trim()
+    };
+    setExpressions.push("#scripture = :scripture");
+  } else {
+    expressionNames["#scripture"] = "scripture";
+    removeExpressions.push("#scripture");
+  }
+
   const updateSegments = [`SET ${setExpressions.join(", ")}`];
   if (removeExpressions.length > 0) {
     updateSegments.push(`REMOVE ${removeExpressions.join(", ")}`);
@@ -651,7 +719,9 @@ async function ingestSongFile(filePath, { dryRun = false } = {}) {
       lyrics: contentPayload.lyrics,
       lyricsPreview: contentPayload.lyricsPreview,
       artwork: contentPayload.artwork,
-      artworkUrl: contentPayload.artworkUrl
+      artworkUrl: contentPayload.artworkUrl,
+      reference: contentPayload.reference,
+      scripture: contentPayload.scripture
     }, {
       dryRun
     });

@@ -1,0 +1,18 @@
+#title
+Scripture Test Song
+
+#reference
+Exodus 5:1 | Exodus 7:16
+
+#scriptureRef
+Exodus 5:1
+
+#scriptureQuote
+Thus says the Lord, the God of Israel, "Let my people go."
+
+#songmeaning
+A meaning paragraph used for thesis derivation.
+
+#lyrics
+Line one of test lyrics
+Line two of test lyrics

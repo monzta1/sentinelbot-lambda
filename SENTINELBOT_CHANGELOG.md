@@ -7,6 +7,11 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.8.3 - May 2026
+- shield-cli now ingests `#Reference`, `#ScriptureRef`, `#ScriptureQuote` template sections. Reference is a free-form pipe-separated string ("Exodus 5:1 | Exodus 7:16"); the two scripture sections combine into a `scripture: { ref, quote }` object on the song record. Both paths (the in-memory test state file and the production DynamoDB UpdateCommand) write the new fields, and both tear them down when the template omits them. `buildContentHash` now includes the new fields so an edit to scripture re-emits a SONG_UPDATED event.
+- Added a fresh template at `~/Documents/song-template.txt` for cloning per release. Includes Title, Genre, Tags, Reference, ScriptureRef, ScriptureQuote, SongMeaning, Lyrics sections.
+- Two new tests: `scripture-ingest` confirms the round-trip from template to song record, `scripture-missing` confirms a template without scripture sections still ingests cleanly with no scripture field.
+
 ## v1.8.2 - May 2026
 - Site publisher now reads `reference` and `scripture` fields off the song record and emits them on `released[]` entries plus `homepage.featuredRelease`. shield-cli does not yet write these (a follow-up), so for now they are populated directly via DynamoDB and the publisher passes them through verbatim. The merge helper preserves the curated record's scripture when promoting a coming-soon song to released.
 - Added 8 tests for scripture passthrough on `normalizeSongTableItem` and the merge path; default-empties when absent.
