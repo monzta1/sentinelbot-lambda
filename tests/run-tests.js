@@ -134,50 +134,65 @@ function assertEqual(actual, expected, label) {
   assert(!sb.isResolvableIp("192.0.2.5"), "TEST-NET-1 documentation range is not resolvable");
 }
 
-// --- formatLocation: combines city and country in the agreed format ---
+// --- formatLocation: returns "City, RegionCode" (compact format) ---
 {
+  // US state codes
   assertEqual(
-    sb.formatLocation({ city: "Herndon", country_name: "United States" }),
-    "Herndon, United States",
-    "City + country_name (ipapi.co default) -> 'City, Country'"
+    sb.formatLocation({ cityName: "Dallas", regionCode: "TX", countryCode: "US" }),
+    "Dallas, TX",
+    "freeipapi.com US payload -> 'City, StateCode'"
   );
   assertEqual(
-    sb.formatLocation({ city: "Herndon", country: "United States" }),
-    "Herndon, United States",
-    "City + country (fallback key) -> 'City, Country'"
+    sb.formatLocation({ cityName: "Washington D.C.", regionCode: "DC", countryCode: "US" }),
+    "Washington D.C., DC",
+    "freeipapi.com DC payload -> 'City, DC'"
+  );
+  // International region codes
+  assertEqual(
+    sb.formatLocation({ cityName: "Ancaster", regionCode: "ON", countryCode: "CA" }),
+    "Ancaster, ON",
+    "freeipapi.com Canadian payload -> 'City, ProvinceCode'"
   );
   assertEqual(
-    sb.formatLocation({ city: "", country: "Canada" }),
-    "Canada",
-    "Missing city -> country alone"
+    sb.formatLocation({ cityName: "Craignish", regionCode: "QLD", countryCode: "AU" }),
+    "Craignish, QLD",
+    "freeipapi.com Australian payload -> 'City, StateCode' (3-letter region works)"
+  );
+  // Fallback to country when region is empty
+  assertEqual(
+    sb.formatLocation({ cityName: "Somewhere", regionCode: "", countryCode: "US" }),
+    "Somewhere, US",
+    "Missing regionCode -> falls back to countryCode"
+  );
+  // ipwho.is uses snake_case keys
+  assertEqual(
+    sb.formatLocation({ city: "Baltimore", region_code: "MD", country_code: "US" }),
+    "Baltimore, MD",
+    "ipwho.is payload (snake_case keys) -> 'City, RegionCode'"
+  );
+  // Missing pieces
+  assertEqual(
+    sb.formatLocation({ cityName: "", regionCode: "TX", countryCode: "US" }),
+    "TX",
+    "Missing city -> subdivision alone"
   );
   assertEqual(
-    sb.formatLocation({ city: "Tokyo", country: "" }),
+    sb.formatLocation({ cityName: "Tokyo", regionCode: "", countryCode: "" }),
     "Tokyo",
-    "Missing country -> city alone"
+    "Missing region + country -> city alone"
   );
-  assertEqual(sb.formatLocation({ city: "", country: "" }), null, "Both empty -> null");
-  assertEqual(sb.formatLocation(null), null, "Null payload -> null");
+  // Empty / null / error cases
   assertEqual(sb.formatLocation({}), null, "Empty object -> null");
+  assertEqual(sb.formatLocation(null), null, "Null payload -> null");
   assertEqual(
     sb.formatLocation({ error: true, reason: "quota" }),
     null,
-    "Error payload from ipapi.co -> null (no city or country to format)"
+    "ipapi.co error payload -> null"
   );
   assertEqual(
     sb.formatLocation({ success: false, message: "rate limit" }),
     null,
-    "Failure payload from ipwho.is -> null (success: false ignored)"
-  );
-  assertEqual(
-    sb.formatLocation({ success: true, city: "Baltimore", country: "United States" }),
-    "Baltimore, United States",
-    "Success payload from ipwho.is -> 'City, Country'"
-  );
-  assertEqual(
-    sb.formatLocation({ cityName: "Centreville", countryName: "United States" }),
-    "Centreville, United States",
-    "Payload from freeipapi.com (cityName + countryName) -> 'City, Country'"
+    "ipwho.is failure payload -> null"
   );
 }
 

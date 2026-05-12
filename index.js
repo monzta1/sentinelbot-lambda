@@ -2764,10 +2764,16 @@ function formatLocation(payload) {
   if (payload.error) return null;            // ipapi.co failure
   if (payload.success === false) return null; // ipwho.is failure
   const city = String(payload.cityName || payload.city || "").trim();
-  const country = String(payload.countryName || payload.country_name || payload.country || "").trim();
-  if (!city && !country) return null;
-  if (city && country) return `${city}, ${country}`;
-  return city || country;
+  // Prefer region code (US state, Canadian province, Aus state, etc.)
+  // for compactness: "Dallas, TX" rather than "Dallas, United States".
+  // Fall back to country code for places where region is missing or
+  // the IP resolves only at country granularity.
+  const region = String(payload.regionCode || payload.region_code || "").trim();
+  const countryCode = String(payload.countryCode || payload.country_code || "").trim();
+  const subdivision = region || countryCode;
+  if (!city && !subdivision) return null;
+  if (city && subdivision) return `${city}, ${subdivision}`;
+  return city || subdivision;
 }
 
 async function resolveIpLocation(ip) {

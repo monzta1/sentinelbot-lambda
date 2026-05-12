@@ -27,6 +27,7 @@ const IPAPI_BASE = "https://freeipapi.com/api/json";
 const RATE_LIMIT_MS = 1500; // freeipapi.com free tier 60 req/min; well under that
 const DRY_RUN = process.argv.includes("--dry-run");
 const RETRY_NULL = process.argv.includes("--retry-null");
+const FORCE = process.argv.includes("--force");
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
 
@@ -50,10 +51,12 @@ function formatLocation(payload) {
   if (payload.error) return null;            // ipapi.co
   if (payload.success === false) return null; // ipwho.is
   const city = String(payload.cityName || payload.city || "").trim();
-  const country = String(payload.countryName || payload.country_name || payload.country || "").trim();
-  if (!city && !country) return null;
-  if (city && country) return `${city}, ${country}`;
-  return city || country;
+  const region = String(payload.regionCode || payload.region_code || "").trim();
+  const countryCode = String(payload.countryCode || payload.country_code || "").trim();
+  const subdivision = region || countryCode;
+  if (!city && !subdivision) return null;
+  if (city && subdivision) return `${city}, ${subdivision}`;
+  return city || subdivision;
 }
 
 function sleep(ms) {
@@ -76,22 +79,35 @@ async function scanAllLogs() {
   const items = [];
   let cursor = null;
   // Default: only rows that have never been processed (no location
-  // attribute at all). With --retry-null, also re-process rows where
-  // a prior backfill stored location=null because the API failed for
-  // a transient reason (different provider, rate-limit, CORS quirk).
-  // RETRY_NULL is the operator-controlled escape hatch for those.
-  const filterExpr = RETRY_NULL
-    ? "logType = :lt AND (attribute_not_exists(#loc) OR #loc = :nullVal)"
-    : "logType = :lt AND attribute_not_exists(#loc)";
+  // attribute at all). Three operator-controlled escape hatches:
+  //   --retry-null  also re-process rows whose stored location is
+  //                 null (a prior attempt failed transiently).
+  //   --force       re-process every sentinelbot row regardless of
+  //                 current location value. Used when the format
+  //                 itself changes (e.g. City, Country -> City, RegionCode)
+  //                 and existing data needs to be re-resolved.
+  let filterExpr;
   const values = { ":lt": "sentinelbot" };
-  if (RETRY_NULL) values[":nullVal"] = null;
+  if (FORCE) {
+    filterExpr = "logType = :lt";
+  } else if (RETRY_NULL) {
+    filterExpr = "logType = :lt AND (attribute_not_exists(#loc) OR #loc = :nullVal)";
+    values[":nullVal"] = null;
+  } else {
+    filterExpr = "logType = :lt AND attribute_not_exists(#loc)";
+  }
   do {
     const input = {
       TableName: TABLE_NAME,
       FilterExpression: filterExpr,
-      ExpressionAttributeNames: { "#loc": "location" },
       ExpressionAttributeValues: values
     };
+    // Only declare the #loc alias when the filter actually references
+    // it. DynamoDB rejects ExpressionAttributeNames entries that are
+    // unused in any expression.
+    if (!FORCE) {
+      input.ExpressionAttributeNames = { "#loc": "location" };
+    }
     if (cursor) input.ExclusiveStartKey = cursor;
     const page = await dynamo.send(new ScanCommand(input));
     items.push(...(page.Items || []));

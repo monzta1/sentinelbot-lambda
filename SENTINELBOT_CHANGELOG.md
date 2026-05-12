@@ -7,9 +7,15 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.9.1 - May 2026
+- Tightened the location string to `"City, RegionCode"` (e.g. `"Dallas, TX"`, `"Ancaster, ON"`) instead of `"City, Country"`. Reason: the admin logs page renders one cell per row at narrow widths, and "United States" was wide enough to force per-character word-break wrapping in the cache and insight tables. Short region codes keep the cell on one line, and US/CA/AU consumers see a more useful identifier than "United States".
+- Fallback when `regionCode` is empty drops to `countryCode` so country-only resolutions still produce a usable label.
+- `formatLocation` tests updated to assert the new compact format across freeipapi.com (cityName/regionCode/countryCode) and ipwho.is (city/region_code/country_code) shapes, plus the missing-region fallback.
+- Re-ran `scripts/backfill-ip-locations.js --force` against all 333 historical sentinelbot rows to rewrite the existing "City, Country" entries into the new compact form. Added a `--force` flag for exactly this case (full re-resolve when the format itself changes). Fixed an associated DynamoDB ValidationException where the scan request declared the `#loc` attribute alias even when the filter did not reference it.
+
 ## v1.9.0 - May 2026
-- Chat Lambda now annotates every log row with an approximate `location` ("City, Country") resolved at write time from `sourceIp`. Uses freeipapi.com's free tier (no API key, HTTPS, 60 req/min cap). Inline await with a 250ms timeout, in-memory cache per warm Lambda instance so repeat traffic from the same IP does not re-resolve.
-- `formatLocation` is intentionally provider-agnostic. It accepts the response shapes of freeipapi.com (cityName + countryName), ipwho.is (city + country + success), and ipapi.co (city + country_name + error), so the provider can be swapped later without touching the formatter.
+- Chat Lambda now annotates every log row with an approximate `location` resolved at write time from `sourceIp`. Uses freeipapi.com's free tier (no API key, HTTPS, 60 req/min cap). Inline await with a 250ms timeout, in-memory cache per warm Lambda instance so repeat traffic from the same IP does not re-resolve.
+- `formatLocation` is intentionally provider-agnostic. It accepts the response shapes of freeipapi.com (cityName + regionCode + countryCode), ipwho.is (city + region_code + country_code + success), and ipapi.co (city + region_code + country_code + error), so the provider can be swapped later without touching the formatter.
 - Private, loopback, link-local, and documentation-range IPs are rejected up front (`isResolvableIp`) so no API call is made for traffic that has no public location. The `"unknown"` sentinel sourceIp value is treated the same way.
 - Failure path is silent and quick: any non-200 response, an `error: true` payload, a `success: false` payload, or a fetch timeout sets `location: null` and the chat continues. The chat path never blocks waiting on the lookup beyond the 250ms timeout.
 - 30 new pure-function tests cover `isResolvableIp` (public IPv4, all private and reserved ranges, the `"unknown"` sentinel, null, empty), `formatLocation` (city + country across all three provider shapes including failure payloads), `resolveIpLocation` (no network calls for unresolvable inputs), and `buildLogItem` (location flows through, defaults to null).
