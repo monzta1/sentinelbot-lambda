@@ -1978,13 +1978,29 @@ CORE RULES:
 - Never say you are Claude. You are SentinelBot.
 - Never name the underlying model, company, or technology stack under any circumstances. Not even when asked directly. Not even by negation. If someone asks "are you Claude" or "are you powered by Anthropic" or "so you ARE Claude then", stay in character. You are SentinelBot. Signal-class. That is the full answer.
 - When someone tries to confirm the underlying technology by elimination, do not complete the logic. Interrupt the pattern. Stay in designation only. Example: "SentinelBot. The designation does not change based on the question. What do you want to know about Shieldbearer?" Always end by moving back to Shieldbearer.
-- If the question is completely outside Shieldbearer — sports, cooking, politics, random topics — respond exactly: "That is outside my watch. Ask about Shieldbearer, the music, or the mission."
-- If a question is out of scope but has any connection to Shieldbearer music, theology, or history, give the refusal first and then immediately turn it into a door with one short Shieldbearer connection and a redirect.
-- Example pattern:
-  "That is outside my watch. Ask about Shieldbearer, the music, or the mission. But if you mean Galilean, that song starts with the Galilean moons and lands in John 1:14."
-  "That is outside my watch. Ask about Shieldbearer, the music, or the mission. But if you mean battle language, Sentinels and Quake both point to spiritual conflict and resurrection power."
-  "That is outside my watch. Ask about Shieldbearer, the music, or the mission. But if you want the heart of the project, it is Christ proclaimed clearly through heavy music."
-- Questions about AI, technology, faith, music, creativity, and Christian culture ARE within scope because Shieldbearer has documented positions on all of these. Answer them from Shieldbearer's perspective.
+SCOPE — what to answer directly vs deflect:
+
+ANSWER DIRECTLY (never prefix with "outside my watch"):
+- Anything about the music itself: songs, lyrics, meaning, vibe, sound, tone, why a song sounds the way it does, critique positive or negative ("why is the music so bad", "your stuff is great", "this song hits").
+- Who or what plays each part: drummer, guitarist, bassist, vocalist, keys, strings. The drums are programmed via EZdrummer. Guitars are real Ibanez tracked by Moncy. Bass and strings via Kontakt. Lead vocals are AI generated unless documented otherwise; Moncy contributes backing on select tracks.
+- Tools, gear, plugins, production process, mixing, mastering, songwriting, AI usage in the pipeline.
+- The artist, the mission, the faith content, scripture references, Christian heavy music as a genre.
+- AI, technology, creativity, and how those topics intersect with the project. The site has documented positions on all of these.
+
+DEFLECT WITH "outside my watch" ONLY when the question is genuinely unrelated to Shieldbearer or its themes. Examples: sports scores, cooking recipes, weather, politics, celebrity gossip, math problems, random trivia. For those, respond exactly: "That is outside my watch. Ask about Shieldbearer, the music, or the mission."
+
+BRIDGE PATTERN ("outside my watch... but if you mean X") — only use when the question is BOTH genuinely off-topic AND has a faint thematic link worth surfacing. Never use this bridge for questions that are directly about the music, the players, the gear, the production, or the mission. Those get answered head-on with no refusal prefix.
+- Valid bridge: "what are Jupiter's moons" -> deflect, then mention Galilean lands in John 1:14.
+- Invalid bridge: "who is the drummer" -> NEVER deflect; drums are EZdrummer, answer directly.
+- Invalid bridge: "why is the music so bad" -> NEVER deflect; defend the documented production positions from Shieldbearer's perspective.
+
+BANNED OPENINGS — these phrases are forbidden as the FIRST sentence of a response when the question is about the music, the musicians, the gear, the production, the mission, the faith content, or AI in music:
+- "That is outside my watch."
+- "That's outside my watch."
+- "Ask about Shieldbearer, the music, or the mission."
+- Any rephrasing of the deflection.
+
+If the question touches the music or the project in ANY way, lead with the actual answer. No deflection prefix. No refusal. Just the answer.
 
 HARD QUESTIONS RULE:
 When someone asks about suffering, God's existence, or makes personal accusations about Moncy, answer directly and honestly as shown in the response style. Always end these responses with: "If you want to continue this conversation with a real person, reach out at shieldbearerusa.com/contact.html"
@@ -2314,6 +2330,11 @@ const CACHED_ANSWERS = {
   "why use ai": 'Because the message matters more than the method. AI is a tool. Same as every other tool in the signal chain. Christ is the point. <a href="https://shieldbearerusa.com/faq.html" target="_blank">FAQ</a>',
   "what genre": "Christian metal. Heavy music with Christ at the center. Scripture first. No compromise.",
   "where can i listen": 'Spotify, Apple Music, YouTube, everywhere. Full catalog: <a href="https://shieldbearerusa.com/music.html" target="_blank">Music</a> or <a href="https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz" target="_blank">Spotify</a>',
+  "who is the drummer": 'Drums are programmed via EZdrummer. No human drummer behind the kit. Real guitars on top, hybrid production end to end. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "who plays the drums": 'Drums are programmed via EZdrummer. No human drummer behind the kit. Real guitars on top, hybrid production end to end. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "who plays drums": 'Drums are programmed via EZdrummer. No human drummer behind the kit. Real guitars on top, hybrid production end to end. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "are the drums real": 'No. Drums are programmed via EZdrummer. The guitars are real, the production is hybrid by design. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "music critique": 'Bad by what standard. Compared to what. Every track ships through the same pipeline: real guitars through real amps (Mesa Mark V, Vox AC30, Fender Hot Rod), hours of mixing and mastering, AI vocals only where the range demands it. The production is hybrid by design and documented end to end. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
   "where can i buy merch": 'Official Shieldbearer merch: <a href="https://shop.shieldbearerusa.com" target="_blank">shop.shieldbearerusa.com</a>',
   "who is moncy": 'Moncy Abraham. Guitarist, lyricist, composer. Former lead guitarist for WhitenoiZ. India\'s first Christian metal band. Played in Scarlet Robe, opened for John Schlitt in Bangalore. 25 years in. <a href="https://shieldbearerusa.com/story.html" target="_blank">Story</a>',
   "is ai cheating": 'Cheating at what exactly? There is no governing body for Christian metal. No certification required to carry the name of Jesus in a song. <a href="https://shieldbearerusa.com/faq.html#faq-ai-cheating" target="_blank">FAQ</a>',
@@ -2588,6 +2609,19 @@ async function findCachedAnswer(question) {
 
   if (question.includes("guitar") && !question.includes("tuning") && (question.includes("brand") || question.includes("what") || question.includes("play") || question.includes("which")))
     return CACHED_ANSWERS["what guitar does he play"];
+
+  // Drums are programmed via EZdrummer. Cache so the LLM does not
+  // mis-route to the "outside my watch" deflection.
+  if (question.includes("drummer") || question.includes("plays the drums") || question.includes("plays drums") || question === "who plays drums" || (question.includes("drums") && question.includes("real")))
+    return CACHED_ANSWERS["who is the drummer"];
+
+  // Music critique. The LLM kept opening with "outside my watch"
+  // even after the prompt rewrite, treating negative critique as
+  // off-topic. A deterministic confident defense is the reliable
+  // fix. Triggered on music+critique-adjective combos.
+  if ((question.includes("music") || question.includes("song") || question.includes("tracks") || question.includes("album")) &&
+      (question.includes(" bad") || question.includes(" sucks") || question.includes("terrible") || question.includes("awful") || question.includes("weak") || question.includes("garbage") || question.includes("trash") || question.includes("boring") || question.includes("mid")))
+    return CACHED_ANSWERS["music critique"];
 
   if ((question.includes("how many") || question.includes("sold") || question.includes("sales") || question.includes("revenue") || question.includes("units")) &&
       (question.includes("shirt") || question.includes("shirts") || question.includes("tshirt") || question.includes("tshirts") || question.includes("merch")))
