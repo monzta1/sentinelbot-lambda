@@ -7,6 +7,13 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.9.3 - May 2026
+- Switched IP geolocation provider from freeipapi.com to ipinfo.io (anonymous tier, no API key, ~1k req/day per source IP, HTTPS, $0/month). Trigger: a real user IP from Chantilly VA resolved to "Washington D.C., DC" on freeipapi.com because that provider keys off the Verizon hostname `pool-108-28-97-217.washdc.fios.verizon.net`. ipinfo.io resolved the same IP to "Arcola, VA" (Arcola is adjacent to Chantilly), which is materially more accurate.
+- ipinfo.io returns the full state name ("Virginia") rather than a two-letter code, so `formatLocation` now maps US state names to postal codes via a built-in table. Keeps the displayed format compact: "Arcola, VA" not "Arcola, Virginia". Non-US regions pass through as-is (e.g. "Hamilton, Ontario", "Brisbane, Queensland"). The formatter remains provider-agnostic: it still accepts freeipapi.com (`cityName`/`regionCode`/`countryCode`) and ipwho.is (`city`/`region_code`/`country_code`) payloads as fallbacks, so the provider can be swapped again without rewriting the formatter.
+- Bumped the fetch timeout from 1000ms to 2500ms after CloudWatch logs showed ipinfo.io regularly responding to AWS Lambda's source IPs in 1.0-1.5s. The chat path's typical response time is 3-4s end-to-end, so 2500ms still fits comfortably.
+- 4 new tests cover ipinfo.io payload mapping ("Arcola"+"Virginia"+"US" -> "Arcola, VA", DC state name -> "DC", non-US passthrough). All 74 tests pass.
+- Re-ran `scripts/backfill-ip-locations.js --force` against the historical 333 rows (now 341 with test traffic) to migrate every row off freeipapi.com data. Backfill script switched to the same ipinfo.io endpoint and US state map. Rate limit between API calls dropped from 1500ms to 100ms since ipinfo.io is more generous.
+
 ## v1.9.2 - May 2026
 - Fixed a poison-cache bug in `resolveIpLocation`. The previous code cached `null` on any failure path (timeout, non-200, fetch error), so a single transient hiccup permanently marked an IP as unresolvable for the rest of the warm Lambda instance's life. Symptom: a real user request from `108.28.97.217` (known-resolvable, "Washington D.C., DC") logged with `location: null`. Now only the formatter's verdict (the API responded and we parsed it) is cached. Transient failures fall through without poisoning.
 - Bumped the lookup timeout from 250ms to 1000ms. 250ms was tight for freeipapi.com's free tier and was likely the trigger for the cache poisoning. 1000ms is still well below the chat path's typical 1-2s response time.

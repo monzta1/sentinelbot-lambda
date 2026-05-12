@@ -136,7 +136,28 @@ function assertEqual(actual, expected, label) {
 
 // --- formatLocation: returns "City, RegionCode" (compact format) ---
 {
-  // US state codes
+  // ipinfo.io US payload: region is the full state name; expect mapping to code
+  assertEqual(
+    sb.formatLocation({ city: "Arcola", region: "Virginia", country: "US" }),
+    "Arcola, VA",
+    "ipinfo.io US payload (region as full state name) -> 'City, StateCode'"
+  );
+  assertEqual(
+    sb.formatLocation({ city: "Chantilly", region: "Virginia", country: "US" }),
+    "Chantilly, VA",
+    "ipinfo.io 'Virginia' -> 'VA'"
+  );
+  assertEqual(
+    sb.formatLocation({ city: "Washington", region: "District of Columbia", country: "US" }),
+    "Washington, DC",
+    "ipinfo.io 'District of Columbia' -> 'DC'"
+  );
+  assertEqual(
+    sb.formatLocation({ city: "Toronto", region: "Ontario", country: "CA" }),
+    "Toronto, Ontario",
+    "ipinfo.io non-US (Canada) -> region name passes through"
+  );
+  // freeipapi.com US state codes (still supported for legacy provider response)
   assertEqual(
     sb.formatLocation({ cityName: "Dallas", regionCode: "TX", countryCode: "US" }),
     "Dallas, TX",

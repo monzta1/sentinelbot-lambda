@@ -2728,19 +2728,43 @@ async function checkAndIncrementRateLimit(sourceIp) {
 
 /* ── IP geolocation (write-time) ──────────────────────────────────
    Approximate location lookup used to annotate chat log rows.
-   Uses freeipapi.com's free tier (no key, HTTPS, generous quota).
-   Caches per-Lambda-instance in memory so a warm container does
-   not re-resolve the same IP. Returns null for missing, "unknown",
-   or private IPs, which the log writer renders as no location.
-   The chat path tolerates failure quickly (250ms timeout).
+   Uses ipinfo.io anonymous tier (no key, HTTPS, ~1k req/day per
+   source IP). Switched from freeipapi.com after it resolved a
+   real user IP from Chantilly VA to "Washington D.C., DC" based
+   on the Verizon hostname; ipinfo.io resolved the same IP to
+   Arcola VA (adjacent to Chantilly), which is materially more
+   accurate. Caches per-Lambda-instance in memory so a warm
+   container does not re-resolve the same IP. Returns null for
+   missing, "unknown", or private IPs, which the log writer
+   renders as no location. The chat path tolerates failure
+   quickly (1000ms timeout).
 
    formatLocation is intentionally provider-agnostic. It accepts
-   the response shapes of freeipapi.com (cityName + countryName),
-   ipwho.is (city + country + success), and ipapi.co (city +
-   country_name + error), so the provider can be swapped later
-   without touching the formatter. */
+   ipinfo.io (city + region + country, where region is the full
+   state/province name), freeipapi.com (cityName + regionCode +
+   countryCode), and ipwho.is (city + region_code + country_code
+   + success). For US results, the full state name from ipinfo.io
+   is mapped to its two-letter postal code so the displayed form
+   stays compact ("Arcola, VA" rather than "Arcola, Virginia"). */
 const _ipLocationCache = new Map();
-const _IP_LOOKUP_TIMEOUT_MS = 1000;
+const _IP_LOOKUP_TIMEOUT_MS = 2500;
+
+const _US_STATE_CODES = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR",
+  california: "CA", colorado: "CO", connecticut: "CT", delaware: "DE",
+  "district of columbia": "DC", florida: "FL", georgia: "GA",
+  hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN",
+  iowa: "IA", kansas: "KS", kentucky: "KY", louisiana: "LA",
+  maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI",
+  minnesota: "MN", mississippi: "MS", missouri: "MO", montana: "MT",
+  nebraska: "NE", nevada: "NV", "new hampshire": "NH", "new jersey": "NJ",
+  "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+  "north dakota": "ND", ohio: "OH", oklahoma: "OK", oregon: "OR",
+  pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC",
+  "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT",
+  vermont: "VT", virginia: "VA", washington: "WA", "west virginia": "WV",
+  wisconsin: "WI", wyoming: "WY", "puerto rico": "PR"
+};
 
 function isResolvableIp(ip) {
   if (!ip || typeof ip !== "string") return false;
@@ -2763,13 +2787,23 @@ function formatLocation(payload) {
   if (!payload || typeof payload !== "object") return null;
   if (payload.error) return null;            // ipapi.co failure
   if (payload.success === false) return null; // ipwho.is failure
+  if (payload.bogon) return null;            // ipinfo.io: bogon/private IP
   const city = String(payload.cityName || payload.city || "").trim();
-  // Prefer region code (US state, Canadian province, Aus state, etc.)
-  // for compactness: "Dallas, TX" rather than "Dallas, United States".
-  // Fall back to country code for places where region is missing or
-  // the IP resolves only at country granularity.
-  const region = String(payload.regionCode || payload.region_code || "").trim();
-  const countryCode = String(payload.countryCode || payload.country_code || "").trim();
+  // Try short region code first (freeipapi.com, ipwho.is). If only a
+  // full name is available (ipinfo.io's "region" is "Virginia" not
+  // "VA"), map US state names to their postal code to keep the
+  // displayed string compact. Non-US full names pass through as-is.
+  const regionCode = String(payload.regionCode || payload.region_code || "").trim();
+  const regionName = String(payload.region || payload.regionName || payload.region_name || "").trim();
+  const countryCode = String(payload.countryCode || payload.country_code || payload.country || "").trim().toUpperCase();
+  let region = regionCode;
+  if (!region && regionName) {
+    if (countryCode === "US") {
+      region = _US_STATE_CODES[regionName.toLowerCase()] || regionName;
+    } else {
+      region = regionName;
+    }
+  }
   const subdivision = region || countryCode;
   if (!city && !subdivision) return null;
   if (city && subdivision) return `${city}, ${subdivision}`;
@@ -2784,8 +2818,9 @@ async function resolveIpLocation(ip) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), _IP_LOOKUP_TIMEOUT_MS);
   try {
-    const resp = await fetch(`https://freeipapi.com/api/json/${encodeURIComponent(ip)}`, {
-      signal: controller.signal
+    const resp = await fetch(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, {
+      signal: controller.signal,
+      headers: { "Accept": "application/json" }
     });
     // Only cache on a successful round-trip. A non-200 or a fetch
     // error (timeout, network blip) is treated as transient, so the
@@ -2793,12 +2828,17 @@ async function resolveIpLocation(ip) {
     // The earlier "cache null on any failure" path could poison a
     // warm Lambda instance for its entire lifetime after a single
     // hiccup, which is what was observed for 108.28.97.217.
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      console.warn(JSON.stringify({ event: "iploc-non-200", ip, status: resp.status }));
+      return null;
+    }
     const data = await resp.json();
     const location = formatLocation(data);
+    console.log(JSON.stringify({ event: "iploc-resolved", ip, location, raw: { city: data.city, region: data.region, country: data.country } }));
     _ipLocationCache.set(ip, location);
     return location;
-  } catch {
+  } catch (err) {
+    console.warn(JSON.stringify({ event: "iploc-error", ip, message: err.message }));
     return null;
   } finally {
     clearTimeout(timer);

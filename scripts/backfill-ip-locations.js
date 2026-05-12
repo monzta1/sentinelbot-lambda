@@ -23,11 +23,28 @@ const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, ScanCommand, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
 
 const TABLE_NAME = process.env.DYNAMO_TABLE || "shieldbearer-sentinel-logs";
-const IPAPI_BASE = "https://freeipapi.com/api/json";
-const RATE_LIMIT_MS = 1500; // freeipapi.com free tier 60 req/min; well under that
+const IPAPI_BASE = "https://ipinfo.io";
+const RATE_LIMIT_MS = 100; // ipinfo.io anonymous tier is generous
 const DRY_RUN = process.argv.includes("--dry-run");
 const RETRY_NULL = process.argv.includes("--retry-null");
 const FORCE = process.argv.includes("--force");
+
+const US_STATE_CODES = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR",
+  california: "CA", colorado: "CO", connecticut: "CT", delaware: "DE",
+  "district of columbia": "DC", florida: "FL", georgia: "GA",
+  hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN",
+  iowa: "IA", kansas: "KS", kentucky: "KY", louisiana: "LA",
+  maine: "ME", maryland: "MD", massachusetts: "MA", michigan: "MI",
+  minnesota: "MN", mississippi: "MS", missouri: "MO", montana: "MT",
+  nebraska: "NE", nevada: "NV", "new hampshire": "NH", "new jersey": "NJ",
+  "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+  "north dakota": "ND", ohio: "OH", oklahoma: "OK", oregon: "OR",
+  pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC",
+  "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT",
+  vermont: "VT", virginia: "VA", washington: "WA", "west virginia": "WV",
+  wisconsin: "WI", wyoming: "WY", "puerto rico": "PR"
+};
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({ region: "us-east-1" }));
 
@@ -48,11 +65,21 @@ function isResolvableIp(ip) {
 
 function formatLocation(payload) {
   if (!payload || typeof payload !== "object") return null;
-  if (payload.error) return null;            // ipapi.co
-  if (payload.success === false) return null; // ipwho.is
+  if (payload.error) return null;
+  if (payload.success === false) return null;
+  if (payload.bogon) return null;
   const city = String(payload.cityName || payload.city || "").trim();
-  const region = String(payload.regionCode || payload.region_code || "").trim();
-  const countryCode = String(payload.countryCode || payload.country_code || "").trim();
+  const regionCode = String(payload.regionCode || payload.region_code || "").trim();
+  const regionName = String(payload.region || payload.regionName || payload.region_name || "").trim();
+  const countryCode = String(payload.countryCode || payload.country_code || payload.country || "").trim().toUpperCase();
+  let region = regionCode;
+  if (!region && regionName) {
+    if (countryCode === "US") {
+      region = US_STATE_CODES[regionName.toLowerCase()] || regionName;
+    } else {
+      region = regionName;
+    }
+  }
   const subdivision = region || countryCode;
   if (!city && !subdivision) return null;
   if (city && subdivision) return `${city}, ${subdivision}`;
@@ -65,7 +92,9 @@ function sleep(ms) {
 
 async function resolveIp(ip) {
   try {
-    const resp = await fetch(`${IPAPI_BASE}/${encodeURIComponent(ip)}`);
+    const resp = await fetch(`${IPAPI_BASE}/${encodeURIComponent(ip)}/json`, {
+      headers: { "Accept": "application/json" }
+    });
     if (!resp.ok) return null;
     const data = await resp.json();
     return formatLocation(data);
