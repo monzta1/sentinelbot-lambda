@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.9.2 - May 2026
+- Fixed a poison-cache bug in `resolveIpLocation`. The previous code cached `null` on any failure path (timeout, non-200, fetch error), so a single transient hiccup permanently marked an IP as unresolvable for the rest of the warm Lambda instance's life. Symptom: a real user request from `108.28.97.217` (known-resolvable, "Washington D.C., DC") logged with `location: null`. Now only the formatter's verdict (the API responded and we parsed it) is cached. Transient failures fall through without poisoning.
+- Bumped the lookup timeout from 250ms to 1000ms. 250ms was tight for freeipapi.com's free tier and was likely the trigger for the cache poisoning. 1000ms is still well below the chat path's typical 1-2s response time.
+
 ## v1.9.1 - May 2026
 - Tightened the location string to `"City, RegionCode"` (e.g. `"Dallas, TX"`, `"Ancaster, ON"`) instead of `"City, Country"`. Reason: the admin logs page renders one cell per row at narrow widths, and "United States" was wide enough to force per-character word-break wrapping in the cache and insight tables. Short region codes keep the cell on one line, and US/CA/AU consumers see a more useful identifier than "United States".
 - Fallback when `regionCode` is empty drops to `countryCode` so country-only resolutions still produce a usable label.

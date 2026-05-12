@@ -2740,7 +2740,7 @@ async function checkAndIncrementRateLimit(sourceIp) {
    country_name + error), so the provider can be swapped later
    without touching the formatter. */
 const _ipLocationCache = new Map();
-const _IP_LOOKUP_TIMEOUT_MS = 250;
+const _IP_LOOKUP_TIMEOUT_MS = 1000;
 
 function isResolvableIp(ip) {
   if (!ip || typeof ip !== "string") return false;
@@ -2787,16 +2787,18 @@ async function resolveIpLocation(ip) {
     const resp = await fetch(`https://freeipapi.com/api/json/${encodeURIComponent(ip)}`, {
       signal: controller.signal
     });
-    if (!resp.ok) {
-      _ipLocationCache.set(ip, null);
-      return null;
-    }
+    // Only cache on a successful round-trip. A non-200 or a fetch
+    // error (timeout, network blip) is treated as transient, so the
+    // next request from the same IP gets another chance to resolve.
+    // The earlier "cache null on any failure" path could poison a
+    // warm Lambda instance for its entire lifetime after a single
+    // hiccup, which is what was observed for 108.28.97.217.
+    if (!resp.ok) return null;
     const data = await resp.json();
     const location = formatLocation(data);
     _ipLocationCache.set(ip, location);
     return location;
   } catch {
-    _ipLocationCache.set(ip, null);
     return null;
   } finally {
     clearTimeout(timer);
