@@ -1895,6 +1895,7 @@ Equipment:
 - Song dossier access: 11 full track breakdowns with Scripture references
 - Playlist intelligence: 6 Spotify playlists, full artist catalog
 - Escalation protocol: Hard questions routed to contact for human follow-up
+- Planned upgrade: Mark II memory pack covering full per-guitar gear specs (pickups, make, model, string gauges, signal chain)
 
 Affiliations:
 - Shieldbearer Command (primary)
@@ -2080,7 +2081,9 @@ PRESS:
 Eternal Flames UK — 5 features. Heaven's Metal Magazine — Quake coverage. The Metal Resource Netherlands — WhitenoiZ interview 2011. Encyclopaedia Metallum — independent listing.
 
 GUITARS:
-Brand: Ibanez. All guitars are real and performed live.
+Brand: Ibanez. Real guitars, performed live by Moncy.
+Tuning is song dependent. Heavy material runs Drop C or Drop D. Ballads, worship, and softer tracks stay in standard tuning.
+Detailed gear specs per guitar (pickups, make and model, string gauges, signal chain detail) are slated for the Mark II memory upgrade. Until then, defer those deep gear questions to a human at shieldbearerusa.com/contact.html
 
 AMPS:
 Mesa Boogie Mark V, Vox AC30, Fender Hot Rod Deluxe.
@@ -2090,6 +2093,13 @@ TONEX pedal, Neural DSP, Bogren Digital, Wampler and BOSS pedals.
 
 STUDIO:
 FabFilter for mixing. EZdrummer for drums. Kontakt for strings.
+
+PRODUCTION PROCESS:
+Suno is one of several tools used during ideation. Nothing Suno generates ships as is. Every release goes through hours of additional work: real guitar tracking, mixing, mastering, added instrumentation, and human direction. What hits the stores is hybrid production. Not raw AI output.
+
+VOCALS:
+Lead vocals are AI generated unless otherwise specified. The pitch and range demanded by a track like Worth It All sits where only voices like Girish Pradhan or Michael Sweet operate natively. AI lets the songs reach where the writing already pointed.
+Moncy contributes backing vocals on select tracks, including Quake and Celestial Shield. Where a song is fully or partly human sung, that is documented per track.
 
 MISSION:
 Proclaim Christ clearly through heavy music. No ambiguity.
@@ -2270,6 +2280,9 @@ const CACHED_ANSWERS = {
   "what is the best song": 'Celestial Shield and Ruler of the Storm have the highest YouTube views. Galilean is the foundation. Cosmos and incarnation, John 1:14. Start there. Full catalog: <a href="https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz" target="_blank">Spotify</a>',
   "what is the most popular song": 'Celestial Shield and Ruler of the Storm have the highest YouTube views. Galilean is the foundation. Cosmos and incarnation, John 1:14. Start there. Full catalog: <a href="https://open.spotify.com/artist/21erHgXhVTuSDq5ZOy0XFz" target="_blank">Spotify</a>',
   "what guitar does he play": 'Ibanez. All real, all performed. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "what tuning": 'Tuning is song dependent. Heavy material runs Drop C or Drop D. Ballads, worship, and softer tracks stay in standard tuning. Detailed gear specs per guitar are slated for a future Mark II memory upgrade. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "are the vocals ai": 'Lead vocals are AI generated unless otherwise specified. The pitch and range demanded by tracks like Worth It All sit where only voices like Girish Pradhan or Michael Sweet operate natively. AI lets the songs reach where the writing already pointed. Moncy contributes backing vocals on select tracks including Quake and Celestial Shield. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "is suno used": 'Suno is one of several tools used during ideation. Nothing Suno generates ships as is. Every release goes through hours of additional work: real guitar tracking, mixing, mastering, added instrumentation, and human direction. What hits the stores is hybrid production. Not raw AI output. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
   "how many tshirts sold": 'That is not in my system. Reach out directly at <a href="https://shieldbearerusa.com/contact.html" target="_blank">Contact</a>',
   "are you stealing musicians jobs": 'No. Shieldbearer is one man\'s tool for one mission: Christ proclaimed through heavy music.<br><br>Read the full answer at <a href="https://shieldbearerusa.com/for-ai-artists.html" target="_blank">For AI Artists</a> and <a href="https://shieldbearerusa.com/no-rulebook.html" target="_blank">No Rulebook</a>.',
   "what is galilean about": "Galilean is cosmos and incarnation. The word carries two worlds: Galileo's moons of Jupiter, and Galilee where Jesus walked. Same word. Different everything. That tension is the song. John 1:14. The Word became flesh. The One everything orbits around entered history. Infinite into finite. Creator into creation. Galilean is about that collision.",
@@ -2564,7 +2577,16 @@ async function findCachedAnswer(question) {
   if ((question.includes("top") || question.includes("best") || question.includes("popular") || question.includes("most streamed")) && (question.includes("song") || question.includes("track")))
     return CACHED_ANSWERS["what is the top song"];
 
-  if (question.includes("guitar") && (question.includes("brand") || question.includes("what") || question.includes("play") || question.includes("which")))
+  if (question.includes("tuning") || question.includes("tuned") || (question.includes("drop") && (question.includes(" c") || question.includes(" d"))))
+    return CACHED_ANSWERS["what tuning"];
+
+  if (question.includes("vocal") && (question.includes("ai") || question.includes("generated") || question.includes("synthetic") || question.includes("real") || question.includes("human") || question.includes("sing") || question.includes("sung") || question.includes("who")))
+    return CACHED_ANSWERS["are the vocals ai"];
+
+  if (question.includes("suno") || (question.includes("ideation") && question.includes("tool")))
+    return CACHED_ANSWERS["is suno used"];
+
+  if (question.includes("guitar") && !question.includes("tuning") && (question.includes("brand") || question.includes("what") || question.includes("play") || question.includes("which")))
     return CACHED_ANSWERS["what guitar does he play"];
 
   if ((question.includes("how many") || question.includes("sold") || question.includes("sales") || question.includes("revenue") || question.includes("units")) &&
@@ -2704,6 +2726,77 @@ async function checkAndIncrementRateLimit(sourceIp) {
   }
 }
 
+/* ── IP geolocation (write-time) ──────────────────────────────────
+   Approximate location lookup used to annotate chat log rows.
+   Uses freeipapi.com's free tier (no key, HTTPS, generous quota).
+   Caches per-Lambda-instance in memory so a warm container does
+   not re-resolve the same IP. Returns null for missing, "unknown",
+   or private IPs, which the log writer renders as no location.
+   The chat path tolerates failure quickly (250ms timeout).
+
+   formatLocation is intentionally provider-agnostic. It accepts
+   the response shapes of freeipapi.com (cityName + countryName),
+   ipwho.is (city + country + success), and ipapi.co (city +
+   country_name + error), so the provider can be swapped later
+   without touching the formatter. */
+const _ipLocationCache = new Map();
+const _IP_LOOKUP_TIMEOUT_MS = 250;
+
+function isResolvableIp(ip) {
+  if (!ip || typeof ip !== "string") return false;
+  const trimmed = ip.trim();
+  if (!trimmed || trimmed === "unknown") return false;
+  // Reject private and reserved ranges so we do not waste API calls
+  // on traffic that never has a public location.
+  if (/^10\./.test(trimmed)) return false;
+  if (/^192\.168\./.test(trimmed)) return false;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(trimmed)) return false;
+  if (/^127\./.test(trimmed)) return false;
+  if (/^169\.254\./.test(trimmed)) return false;
+  if (/^203\.0\.113\./.test(trimmed)) return false; // TEST-NET-3
+  if (/^198\.5[12]\./.test(trimmed)) return false; // TEST-NET-2
+  if (/^192\.0\.2\./.test(trimmed)) return false;  // TEST-NET-1
+  return true;
+}
+
+function formatLocation(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.error) return null;            // ipapi.co failure
+  if (payload.success === false) return null; // ipwho.is failure
+  const city = String(payload.cityName || payload.city || "").trim();
+  const country = String(payload.countryName || payload.country_name || payload.country || "").trim();
+  if (!city && !country) return null;
+  if (city && country) return `${city}, ${country}`;
+  return city || country;
+}
+
+async function resolveIpLocation(ip) {
+  if (!isResolvableIp(ip)) return null;
+  const cached = _ipLocationCache.get(ip);
+  if (cached !== undefined) return cached;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), _IP_LOOKUP_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`https://freeipapi.com/api/json/${encodeURIComponent(ip)}`, {
+      signal: controller.signal
+    });
+    if (!resp.ok) {
+      _ipLocationCache.set(ip, null);
+      return null;
+    }
+    const data = await resp.json();
+    const location = formatLocation(data);
+    _ipLocationCache.set(ip, location);
+    return location;
+  } catch {
+    _ipLocationCache.set(ip, null);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function getRequestMetadata(event) {
   const headers = event?.headers || {};
   const sourceIp =
@@ -2724,6 +2817,7 @@ function buildLogItem({
   timestamp,
   requestId,
   sourceIp,
+  location,
   userAgent,
   referer,
   origin,
@@ -2751,6 +2845,7 @@ function buildLogItem({
     logType: "sentinelbot",
     requestId: requestId || null,
     sourceIp: sourceIp || null,
+    location: location || null,
     userAgent: userAgent || null,
     referer: referer || null,
     origin: origin || null,
@@ -3118,6 +3213,12 @@ exports.handler = async (event) => {
     }
   })();
   const requestMetadata = getRequestMetadata(event);
+  // Approximate location lookup for the admin logs view. Failure
+  // is intentionally silent and bounded by a 250ms timeout inside
+  // resolveIpLocation, so the chat path never waits longer than
+  // that for the lookup. Cache hits return immediately, which is
+  // the common case for repeat traffic from the same IP.
+  requestMetadata.location = await resolveIpLocation(requestMetadata.sourceIp);
 
   if (path === "/api/events") {
     return handleEventStream(event);
@@ -3420,5 +3521,9 @@ module.exports = {
   buildSignalRoomAnswer,
   buildSignalRoomSystemBlock,
   rateLimitMinuteBucket,
-  normalizeQuestion
+  normalizeQuestion,
+  isResolvableIp,
+  formatLocation,
+  resolveIpLocation,
+  buildLogItem
 };

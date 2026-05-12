@@ -7,6 +7,15 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.9.0 - May 2026
+- Chat Lambda now annotates every log row with an approximate `location` ("City, Country") resolved at write time from `sourceIp`. Uses freeipapi.com's free tier (no API key, HTTPS, 60 req/min cap). Inline await with a 250ms timeout, in-memory cache per warm Lambda instance so repeat traffic from the same IP does not re-resolve.
+- `formatLocation` is intentionally provider-agnostic. It accepts the response shapes of freeipapi.com (cityName + countryName), ipwho.is (city + country + success), and ipapi.co (city + country_name + error), so the provider can be swapped later without touching the formatter.
+- Private, loopback, link-local, and documentation-range IPs are rejected up front (`isResolvableIp`) so no API call is made for traffic that has no public location. The `"unknown"` sentinel sourceIp value is treated the same way.
+- Failure path is silent and quick: any non-200 response, an `error: true` payload, a `success: false` payload, or a fetch timeout sets `location: null` and the chat continues. The chat path never blocks waiting on the lookup beyond the 250ms timeout.
+- 30 new pure-function tests cover `isResolvableIp` (public IPv4, all private and reserved ranges, the `"unknown"` sentinel, null, empty), `formatLocation` (city + country across all three provider shapes including failure payloads), `resolveIpLocation` (no network calls for unresolvable inputs), and `buildLogItem` (location flows through, defaults to null).
+- Added `scripts/backfill-ip-locations.js` for the one-off historical backfill. Scans `shieldbearer-sentinel-logs` for sentinelbot rows missing `location`, dedupes unique sourceIp values, resolves each via freeipapi.com (with a 1.5s polite delay between API calls), then fans out the result to every row sharing that IP. Idempotent: re-running skips rows that already have `location`. Supports `--dry-run`.
+- Provider iteration history: ipapi.co 429'd from a single backfill burst on its anonymous free tier. ipwho.is returned `success: false: CORS is not supported on the Free plan` for every Node fetch call. freeipapi.com handled the same burst cleanly with no headers tuning and is the picked provider.
+
 ## v1.8.3 - May 2026
 - shield-cli now ingests `#Reference`, `#ScriptureRef`, `#ScriptureQuote` template sections. Reference is a free-form pipe-separated string ("Exodus 5:1 | Exodus 7:16"); the two scripture sections combine into a `scripture: { ref, quote }` object on the song record. Both paths (the in-memory test state file and the production DynamoDB UpdateCommand) write the new fields, and both tear them down when the template omits them. `buildContentHash` now includes the new fields so an edit to scripture re-emits a SONG_UPDATED event.
 - Added a fresh template at `~/Documents/song-template.txt` for cloning per release. Includes Title, Genre, Tags, Reference, ScriptureRef, ScriptureQuote, SongMeaning, Lyrics sections.

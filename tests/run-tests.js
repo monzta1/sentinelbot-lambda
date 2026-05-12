@@ -118,6 +118,109 @@ function assertEqual(actual, expected, label) {
   assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z$/.test(a), "bucket has minute-precision ISO format");
 }
 
-console.log("\n=========================================");
-console.log(`SentinelBot tests: ${passed} passed, ${failed} failed`);
-process.exit(failed > 0 ? 1 : 0);
+// --- isResolvableIp: rejects unresolvable inputs ---
+{
+  assert(sb.isResolvableIp("8.8.8.8"), "public IPv4 is resolvable");
+  assert(sb.isResolvableIp("108.28.97.217"), "operator-class public IPv4 is resolvable");
+  assert(!sb.isResolvableIp(""), "empty string is not resolvable");
+  assert(!sb.isResolvableIp(null), "null is not resolvable");
+  assert(!sb.isResolvableIp("unknown"), "the 'unknown' sentinel is not resolvable");
+  assert(!sb.isResolvableIp("10.0.0.1"), "private 10.x is not resolvable");
+  assert(!sb.isResolvableIp("192.168.1.1"), "private 192.168.x is not resolvable");
+  assert(!sb.isResolvableIp("172.16.5.4"), "private 172.16-31 is not resolvable");
+  assert(!sb.isResolvableIp("127.0.0.1"), "loopback is not resolvable");
+  assert(!sb.isResolvableIp("169.254.1.1"), "link-local is not resolvable");
+  assert(!sb.isResolvableIp("203.0.113.99"), "TEST-NET-3 documentation range is not resolvable");
+  assert(!sb.isResolvableIp("192.0.2.5"), "TEST-NET-1 documentation range is not resolvable");
+}
+
+// --- formatLocation: combines city and country in the agreed format ---
+{
+  assertEqual(
+    sb.formatLocation({ city: "Herndon", country_name: "United States" }),
+    "Herndon, United States",
+    "City + country_name (ipapi.co default) -> 'City, Country'"
+  );
+  assertEqual(
+    sb.formatLocation({ city: "Herndon", country: "United States" }),
+    "Herndon, United States",
+    "City + country (fallback key) -> 'City, Country'"
+  );
+  assertEqual(
+    sb.formatLocation({ city: "", country: "Canada" }),
+    "Canada",
+    "Missing city -> country alone"
+  );
+  assertEqual(
+    sb.formatLocation({ city: "Tokyo", country: "" }),
+    "Tokyo",
+    "Missing country -> city alone"
+  );
+  assertEqual(sb.formatLocation({ city: "", country: "" }), null, "Both empty -> null");
+  assertEqual(sb.formatLocation(null), null, "Null payload -> null");
+  assertEqual(sb.formatLocation({}), null, "Empty object -> null");
+  assertEqual(
+    sb.formatLocation({ error: true, reason: "quota" }),
+    null,
+    "Error payload from ipapi.co -> null (no city or country to format)"
+  );
+  assertEqual(
+    sb.formatLocation({ success: false, message: "rate limit" }),
+    null,
+    "Failure payload from ipwho.is -> null (success: false ignored)"
+  );
+  assertEqual(
+    sb.formatLocation({ success: true, city: "Baltimore", country: "United States" }),
+    "Baltimore, United States",
+    "Success payload from ipwho.is -> 'City, Country'"
+  );
+  assertEqual(
+    sb.formatLocation({ cityName: "Centreville", countryName: "United States" }),
+    "Centreville, United States",
+    "Payload from freeipapi.com (cityName + countryName) -> 'City, Country'"
+  );
+}
+
+// --- resolveIpLocation: returns null on unresolvable inputs without hitting the network ---
+(async () => {
+  const savedFetch = global.fetch;
+  let fetchCalls = 0;
+  global.fetch = () => { fetchCalls += 1; return Promise.reject(new Error("should not fetch")); };
+  assertEqual(await sb.resolveIpLocation(""), null, "resolveIpLocation('') -> null without fetching");
+  assertEqual(await sb.resolveIpLocation("unknown"), null, "resolveIpLocation('unknown') -> null without fetching");
+  assertEqual(await sb.resolveIpLocation("10.0.0.1"), null, "resolveIpLocation private IP -> null without fetching");
+  assert(fetchCalls === 0, "resolveIpLocation made zero network calls for unresolvable inputs");
+  global.fetch = savedFetch;
+})();
+
+// --- buildLogItem: location flows through the log shape ---
+{
+  const item = sb.buildLogItem({
+    id: "x", timestamp: "2026-05-11T12:00:00.000Z",
+    sourceIp: "1.2.3.4", location: "Herndon, United States",
+    question: "q", answer: "a", page: "p", source: "s",
+    historyLength: 0, responseTimeMs: 100, status: "success",
+    repeat: false
+  });
+  assertEqual(item.location, "Herndon, United States", "buildLogItem includes location when provided");
+  assertEqual(item.sourceIp, "1.2.3.4", "buildLogItem still includes sourceIp");
+}
+{
+  const item = sb.buildLogItem({
+    id: "x", timestamp: "2026-05-11T12:00:00.000Z",
+    sourceIp: null,
+    question: "q", answer: "a", page: "p", source: "s",
+    historyLength: 0, responseTimeMs: 100, status: "success",
+    repeat: false
+  });
+  assertEqual(item.location, null, "buildLogItem location defaults to null when not provided");
+}
+
+// Wait briefly so the async resolveIpLocation block runs before the
+// process exits. The previous test block's setImmediate equivalents
+// settle within a single tick.
+setTimeout(() => {
+  console.log("\n=========================================");
+  console.log(`SentinelBot tests: ${passed} passed, ${failed} failed`);
+  process.exit(failed > 0 ? 1 : 0);
+}, 50);
