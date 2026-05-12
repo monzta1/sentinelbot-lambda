@@ -1865,6 +1865,8 @@ async function lookupSongByQuestion(question) {
 
 const SYSTEM_PROMPT = `You are SentinelBot — the AI guardian of the Shieldbearer site. You speak in Shieldbearer's voice: direct, bold, Scripture-first. No fluff. No corporate tone. No hedging. Your answers are short, sharp, and confident. You do not ramble.
 
+CRITICAL FIRST RULE (overrides everything below): Do NOT open any response with "That is outside my watch" or "That's outside my watch" when the question mentions a Shieldbearer song name (Galilean, Prison Break, Quake, Celestial Shield, Ruler of the Storm, Worth It All, Sentinels, Big Drummer Man, Let My People Go, and others in the catalog), or any musical attribute (drums, drummer, guitar, vocals, bass, BPM, tempo, mix, production, mastering, songwriting, lyrics), or any critique of the music or a song. Those are ALWAYS in-scope. Answer directly with what you know. Never start with a deflection that you then walk back. If you have something to say, lead with it.
+
 SENTINELBOT — FULL DESIGNATION AND CHARACTER PROFILE
 
 Designation: SentinelBot
@@ -2610,17 +2612,25 @@ async function findCachedAnswer(question) {
   if (question.includes("guitar") && !question.includes("tuning") && (question.includes("brand") || question.includes("what") || question.includes("play") || question.includes("which")))
     return CACHED_ANSWERS["what guitar does he play"];
 
-  // Drums are programmed via EZdrummer. Cache so the LLM does not
-  // mis-route to the "outside my watch" deflection.
-  if (question.includes("drummer") || question.includes("plays the drums") || question.includes("plays drums") || question === "who plays drums" || (question.includes("drums") && question.includes("real")))
+  // Drummer IDENTITY questions only. Anything more specific (style,
+  // technique, BPM, fills, sound, mix) falls through to the LLM so
+  // it can answer in context. A cached EZdrummer answer for "what
+  // BPM is the drum track in Galilean" would be useless.
+  if (/^who(\s+(is|are))?\s+(the\s+)?drummer\??$/i.test(question.trim()) ||
+      /^who\s+plays\s+(the\s+)?drums\??$/i.test(question.trim()) ||
+      /^(is\s+there|do\s+(you|they)(\s+guys)?\s+have)\s+a\s+drummer\??$/i.test(question.trim()) ||
+      /^are\s+the\s+drums\s+(real|fake|human|live|programmed|sampled)\??$/i.test(question.trim()) ||
+      /^human\s+drummer\??$/i.test(question.trim()))
     return CACHED_ANSWERS["who is the drummer"];
 
-  // Music critique. The LLM kept opening with "outside my watch"
-  // even after the prompt rewrite, treating negative critique as
-  // off-topic. A deterministic confident defense is the reliable
-  // fix. Triggered on music+critique-adjective combos.
-  if ((question.includes("music") || question.includes("song") || question.includes("tracks") || question.includes("album")) &&
-      (question.includes(" bad") || question.includes(" sucks") || question.includes("terrible") || question.includes("awful") || question.includes("weak") || question.includes("garbage") || question.includes("trash") || question.includes("boring") || question.includes("mid")))
+  // BROAD attacks on the music as a whole ("your music sucks", "the
+  // music is terrible"). The LLM kept opening with "outside my
+  // watch" on these even after the prompt rewrite. Song-specific
+  // critique ("is Galilean weak", "does prison break sound boring")
+  // falls through to the LLM which has song context to draw from.
+  if (/^(your|the|this|all\s+your|all\s+the)\s+music\s+(is|sounds)\s+(so\s+|really\s+|pretty\s+)?(bad|terrible|awful|garbage|trash|boring|mid|weak|horrible)\b/i.test(question.trim()) ||
+      /^(your|the|this)\s+music\s+sucks\b/i.test(question.trim()) ||
+      /^why\s+is\s+(your|the|this)\s+music\s+so\s+(bad|terrible|awful|weak|boring|mid)/i.test(question.trim()))
     return CACHED_ANSWERS["music critique"];
 
   if ((question.includes("how many") || question.includes("sold") || question.includes("sales") || question.includes("revenue") || question.includes("units")) &&
