@@ -7,6 +7,11 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.9.5 - May 2026
+- Stopped SentinelBot from inventing exact technical specs for songs. Live test of "what BPM are the drums in Galilean" returned "around 160 BPM"; "what key is Worth It All in" returned "E major"; "what time signature does Quake use" returned "4/4". None of those numbers are in any documented source. The LLM was confabulating plausible-sounding figures.
+- Added a system prompt rule (NO INVENTED TECHNICAL SPECS) plus a deterministic cached answer routed on `bpm`, `beats per minute`, `what key`, `time signature`, `tempo`, `track length`, `duration`, `sample rate`. The cached answer says the precise number is not on file and points to Contact. Descriptive questions ("describe the feel", "what is the tempo character") still fall through to the LLM because those are observational, not measurements.
+- The prompt rule alone did not hold (the LLM kept generating numbers); the cache short-circuits the LLM entirely for these specific patterns, same approach used for the deflection fix in v1.9.4.
+
 ## v1.9.4 - May 2026
 - Stopped SentinelBot from opening on-topic music questions with the "That is outside my watch" deflection. Two real-user questions ("who is the drummer", "why is the music so bad") were leading with the deflection prefix before walking it back into a correct answer. Both are clearly on-topic.
 - System prompt restructured with explicit ANSWER DIRECTLY and BANNED OPENINGS sections plus a CRITICAL FIRST RULE at the very top of the prompt naming the catalog songs and musical attributes that are always in-scope. Listing on-topic categories explicitly (the previous prompt only listed off-topic ones) gives the model a positive anchor.

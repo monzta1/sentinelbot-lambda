@@ -1867,6 +1867,8 @@ const SYSTEM_PROMPT = `You are SentinelBot — the AI guardian of the Shieldbear
 
 CRITICAL FIRST RULE (overrides everything below): Do NOT open any response with "That is outside my watch" or "That's outside my watch" when the question mentions a Shieldbearer song name (Galilean, Prison Break, Quake, Celestial Shield, Ruler of the Storm, Worth It All, Sentinels, Big Drummer Man, Let My People Go, and others in the catalog), or any musical attribute (drums, drummer, guitar, vocals, bass, BPM, tempo, mix, production, mastering, songwriting, lyrics), or any critique of the music or a song. Those are ALWAYS in-scope. Answer directly with what you know. Never start with a deflection that you then walk back. If you have something to say, lead with it.
 
+NO INVENTED TECHNICAL SPECS: You do not have BPM, key, time signature, track length, sample rate, or other precise technical numbers for any Shieldbearer song. Do NOT guess. Do NOT pick a plausible-sounding number. If someone asks "what BPM is Galilean" or "what key is Worth It All in" or "what time signature does Quake use", respond with: "I don't have the exact <BPM/key/time signature> for that on file. The studio has the session data; <a href=\\"https://shieldbearerusa.com/contact.html\\" target=\\"_blank\\">reach out</a> if you need the precise figure." You can describe character ("heavy mid-tempo", "down-tuned", "driving") because that is observational, not a measurement. Never present invented numbers as fact.
+
 SENTINELBOT — FULL DESIGNATION AND CHARACTER PROFILE
 
 Designation: SentinelBot
@@ -2337,6 +2339,7 @@ const CACHED_ANSWERS = {
   "who plays drums": 'Drums are programmed via EZdrummer. No human drummer behind the kit. Real guitars on top, hybrid production end to end. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
   "are the drums real": 'No. Drums are programmed via EZdrummer. The guitars are real, the production is hybrid by design. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
   "music critique": 'Bad by what standard. Compared to what. Every track ships through the same pipeline: real guitars through real amps (Mesa Mark V, Vox AC30, Fender Hot Rod), hours of mixing and mastering, AI vocals only where the range demands it. The production is hybrid by design and documented end to end. <a href="https://shieldbearerusa.com/process.html" target="_blank">Process</a>',
+  "exact technical spec": 'I do not have the exact BPM, key, or time signature on file for the catalog. The session data lives in the studio. I can describe the feel of a track (heavy, mid-tempo, drop-tuned, driving) but the precise numbers are not in my record. <a href="https://shieldbearerusa.com/contact.html" target="_blank">Contact</a> if you need the figure.',
   "where can i buy merch": 'Official Shieldbearer merch: <a href="https://shop.shieldbearerusa.com" target="_blank">shop.shieldbearerusa.com</a>',
   "who is moncy": 'Moncy Abraham. Guitarist, lyricist, composer. Former lead guitarist for WhitenoiZ. India\'s first Christian metal band. Played in Scarlet Robe, opened for John Schlitt in Bangalore. 25 years in. <a href="https://shieldbearerusa.com/story.html" target="_blank">Story</a>',
   "is ai cheating": 'Cheating at what exactly? There is no governing body for Christian metal. No certification required to carry the name of Jesus in a song. <a href="https://shieldbearerusa.com/faq.html#faq-ai-cheating" target="_blank">FAQ</a>',
@@ -2632,6 +2635,18 @@ async function findCachedAnswer(question) {
       /^(your|the|this)\s+music\s+sucks\b/i.test(question.trim()) ||
       /^why\s+is\s+(your|the|this)\s+music\s+so\s+(bad|terrible|awful|weak|boring|mid)/i.test(question.trim()))
     return CACHED_ANSWERS["music critique"];
+
+  // Exact technical specs (BPM, key, time signature, etc.). The LLM
+  // would happily invent plausible-sounding numbers ("160 BPM",
+  // "E major", "4/4") without any session data to back it. Cache a
+  // "do not have on file" answer. Allows descriptive questions
+  // ("describe the tempo", "what is the feel of") to fall through.
+  if (/\bbpm\b/i.test(question) ||
+      /\bbeats per minute\b/i.test(question) ||
+      /^what\s+(is\s+)?(the\s+)?(exact\s+)?(key|time\s+signature|tempo|track\s+length|duration|sample\s+rate)\b/i.test(question.trim()) ||
+      /\b(in\s+what\s+key|what\s+key\s+is)\b/i.test(question) ||
+      /\btime\s+signature\b/i.test(question))
+    return CACHED_ANSWERS["exact technical spec"];
 
   if ((question.includes("how many") || question.includes("sold") || question.includes("sales") || question.includes("revenue") || question.includes("units")) &&
       (question.includes("shirt") || question.includes("shirts") || question.includes("tshirt") || question.includes("tshirts") || question.includes("merch")))
