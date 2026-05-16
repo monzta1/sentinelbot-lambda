@@ -156,6 +156,60 @@ Watch on YouTube
   assert(det.isReleaseCandidate({ title: "Sentinels #shorts", durationSeconds: 180 }) === false, "isReleaseCandidate false for shorts");
 }
 
+// --- score-zero guard: the misclassified-Short regression ---
+{
+  // "AI band doing AI things": 186s (clears 45s and the old 120s short
+  // gate), no #shorts, zero release keywords. This is the exact video
+  // that auto-published as a release. It must now be held for review.
+  const regression = det.getReleaseMetadata({
+    videoId: "cdNeg691X2E",
+    title: "AI band doing AI things 🎸",
+    durationSeconds: 186
+  });
+  assertEqual(regression.isCandidate, false, "score-zero video is not a release candidate");
+  assertEqual(regression.rejectionReason, "no_release_keyword", "rejection reason is no_release_keyword");
+  assertEqual(regression.needsManualReview, true, "score-zero non-short flagged for manual review");
+  assert(det.isReleaseCandidate({ title: "AI band doing AI things", durationSeconds: 186 }) === false, "isReleaseCandidate false for score-zero title");
+
+  // A real release with a keyword still passes.
+  const realRelease = det.getReleaseMetadata({ title: "Quake (Official Lyric Video)", durationSeconds: 186 });
+  assertEqual(realRelease.isCandidate, true, "keyword-bearing release still passes the score guard");
+  assertEqual(realRelease.needsManualReview, false, "keyword release not flagged for review");
+}
+
+// --- denylist: operator override ---
+{
+  const denylist = new Set(["cdNeg691X2E"]);
+
+  // Denylisted video: rejected even if it would otherwise score as a release.
+  const denied = det.getReleaseMetadata({
+    videoId: "cdNeg691X2E",
+    title: "Sentinels Official Music Video",
+    durationSeconds: 200
+  }, denylist);
+  assertEqual(denied.isCandidate, false, "denylisted video is not a candidate");
+  assertEqual(denied.rejectionReason, "denylisted", "denylist takes priority in rejection reason");
+  assertEqual(denied.isDenylisted, true, "isDenylisted flag set");
+  assertEqual(denied.needsManualReview, false, "denylisted video does not re-trigger manual review");
+  assert(det.isReleaseCandidate({ videoId: "cdNeg691X2E", title: "Sentinels Official Music Video", durationSeconds: 200 }, denylist) === false, "isReleaseCandidate honors denylist arg");
+
+  // Same video, not on the denylist: passes normally.
+  const allowed = det.getReleaseMetadata({
+    videoId: "cdNeg691X2E",
+    title: "Sentinels Official Music Video",
+    durationSeconds: 200
+  });
+  assertEqual(allowed.isCandidate, true, "non-denylisted release passes");
+
+  // A different video ID is unaffected by the denylist.
+  const other = det.getReleaseMetadata({
+    videoId: "OTHER123",
+    title: "Sentinels Official Music Video",
+    durationSeconds: 200
+  }, denylist);
+  assertEqual(other.isCandidate, true, "denylist only blocks the listed IDs");
+}
+
 // --- buildReleaseEventItem: shape of output ---
 {
   const video = {

@@ -7,6 +7,12 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.11.0 - May 2026
+- YouTube release-detector: added a score-zero guard. A video with none of the release keywords (music, official, single, lyric, live) in its title is no longer auto-published, regardless of duration. This closes the gap that let the 3:06 Short "AI band doing AI things" auto-publish as a full release after YouTube served it as a regular video.
+- Added an operator-controlled denylist. The detector loads `config:release-detector-denylist` (DynamoDB, shape `{ id, videoIds: [] }`) and never treats a listed video ID as a release. Fails open so a DynamoDB blip never stalls a scan.
+- Score-zero videos that clear the short and denylist filters are collected as needsManualReview and surfaced in the SNS scan summary with instructions, so a real release with an unusual title is flagged for the operator instead of silently dropped.
+- Seeded the denylist with cdNeg691X2E (the misclassified Short) and added 13 detector tests covering the guard, the denylist priority, and the manual-review path.
+
 ## v1.9.5 - May 2026
 - Stopped SentinelBot from inventing exact technical specs for songs. Live test of "what BPM are the drums in Galilean" returned "around 160 BPM"; "what key is Worth It All in" returned "E major"; "what time signature does Quake use" returned "4/4". None of those numbers are in any documented source. The LLM was confabulating plausible-sounding figures.
 - Added a system prompt rule (NO INVENTED TECHNICAL SPECS) plus a deterministic cached answer routed on `bpm`, `beats per minute`, `what key`, `time signature`, `tempo`, `track length`, `duration`, `sample rate`. The cached answer says the precise number is not on file and points to Contact. Descriptive questions ("describe the feel", "what is the tempo character") still fall through to the LLM because those are observational, not measurements.

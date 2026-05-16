@@ -13,6 +13,7 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "";
 const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID || "";
 const MAX_SCAN_RESULTS = Math.max(1, Number.parseInt(process.env.YOUTUBE_RELEASE_SCAN_LIMIT || "100", 10) || 100);
 const WATCHER_KEY = "releasewatcher#youtube";
+const DENYLIST_KEY = "config:release-detector-denylist";
 const EVENT_PREFIX = "releaseevent#youtube#";
 const EVENT_STREAM_PK = "eventstream";
 const DEBUG_FILTER = String(process.env.DEBUG_FILTER || "").toLowerCase() === "true";
@@ -185,37 +186,54 @@ function parseIsoDuration(duration) {
   return (hours * 3600) + (minutes * 60) + seconds;
 }
 
-function getReleaseMetadata(video) {
+const EMPTY_DENYLIST = new Set();
+
+function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
   const title = normalizeText(video?.title || "");
   const titleLower = title.toLowerCase();
+  const videoId = String(video?.videoId || "").trim();
   const durationSeconds = Number(video?.durationSeconds || 0);
+  const isDenylisted = Boolean(videoId) && denylist.has(videoId);
   const hasHashShorts = titleLower.includes("#shorts");
   const tooShortForRelease = durationSeconds < 45;
   const releaseKeywords = ["music", "official", "single", "lyric", "live"];
   const score = releaseKeywords.reduce((total, keyword) => (
     titleLower.includes(keyword) ? total + 1 : total
   ), 0);
+  // A real release almost always carries one of the keywords above. A
+  // score of zero is the signal that bit us with the misclassified Short
+  // "AI band doing AI things": YouTube served it as a full video, the
+  // duration cleared 45s, and nothing in the title said release. Hold
+  // these for manual confirmation instead of auto-publishing them.
+  const noReleaseKeyword = score === 0;
   const lowConfidence = score === 0 && durationSeconds < 45;
-  const isCandidate = !(hasHashShorts || tooShortForRelease);
+  const isCandidate = !(isDenylisted || hasHashShorts || tooShortForRelease || noReleaseKeyword);
 
   return {
     isCandidate,
-    rejectionReason: hasHashShorts
-      ? "title_contains_shorts_hashtag"
-      : tooShortForRelease
-        ? "duration_below_45_seconds"
-        : lowConfidence
-          ? "low_confidence_candidate"
-          : null,
+    rejectionReason: isDenylisted
+      ? "denylisted"
+      : hasHashShorts
+        ? "title_contains_shorts_hashtag"
+        : tooShortForRelease
+          ? "duration_below_45_seconds"
+          : noReleaseKeyword
+            ? "no_release_keyword"
+            : lowConfidence
+              ? "low_confidence_candidate"
+              : null,
     score,
     durationSeconds,
+    isDenylisted,
+    noReleaseKeyword,
+    needsManualReview: noReleaseKeyword && !isDenylisted && !hasHashShorts && !tooShortForRelease,
     lowConfidence,
-    debugBypass: DEBUG_FILTER && !hasHashShorts && !tooShortForRelease && score === 0
+    debugBypass: DEBUG_FILTER && !isDenylisted && !hasHashShorts && !tooShortForRelease && score === 0
   };
 }
 
-function isReleaseCandidate(video) {
-  return getReleaseMetadata(video).isCandidate;
+function isReleaseCandidate(video, denylist = EMPTY_DENYLIST) {
+  return getReleaseMetadata(video, denylist).isCandidate;
 }
 
 function logStage(event, details) {
@@ -323,6 +341,27 @@ async function loadWatcherState() {
     }
   }));
   return response?.Item || null;
+}
+
+// Operator-controlled denylist of video IDs that must never be treated
+// as a release. Item shape: { id, videoIds: ["abc", ...] }. Fails open
+// (empty set) so a DynamoDB blip never stalls the whole scan; a slipped
+// video is caught on the next run once the table is reachable again.
+async function loadDenylist() {
+  try {
+    const response = await dynamo.send(new GetCommand({
+      TableName: TABLE_NAME,
+      Key: {
+        id: DENYLIST_KEY
+      }
+    }));
+    const ids = response?.Item?.videoIds;
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.map((value) => String(value || "").trim()).filter(Boolean));
+  } catch (error) {
+    logStage("release-denylist-load-failed", { error: error?.message || String(error) });
+    return new Set();
+  }
 }
 /* c8 ignore stop */
 
@@ -586,10 +625,11 @@ async function publishScanSummary(payload) {
   if (!SNS_TOPIC_ARN) return;
   const ok = payload.status === "ok";
   const createdCount = payload.createdCount || 0;
-  if (ok && createdCount === 0) return;
+  const reviewItems = Array.isArray(payload.skippedForReview) ? payload.skippedForReview : [];
+  if (ok && createdCount === 0 && reviewItems.length === 0) return;
 
   const lines = [];
-  lines.push(ok ? "Release detected." : "Scan FAILED.");
+  lines.push(ok ? "Release scan complete." : "Scan FAILED.");
   lines.push(`Time (UTC): ${payload.timestamp || nowIso()}`);
   if (ok) {
     lines.push(`Videos scanned: ${payload.scannedCount || 0}`);
@@ -600,15 +640,28 @@ async function publishScanSummary(payload) {
       lines.push("New releases:");
       for (const title of payload.detectedTitles) lines.push(`  - ${title}`);
     }
+    if (reviewItems.length) {
+      lines.push("");
+      lines.push("Skipped, needs manual confirmation (no release keyword in title):");
+      for (const item of reviewItems) {
+        lines.push(`  - ${item.title || "(untitled)"} ${item.sourceUrl || ""}`.trimEnd());
+      }
+      lines.push("");
+      lines.push("If one of these is a real release, add it as a coming_soon draft");
+      lines.push("or rename the upload with a release keyword. If it is a Short or");
+      lines.push("not a release, add its video ID to config:release-detector-denylist.");
+    }
   } else {
     lines.push(`Error: ${payload.error || "unknown"}`);
   }
   lines.push("");
   lines.push(`Elapsed: ${payload.elapsedMs || 0}ms`);
 
-  const subject = ok
-    ? `[SentinelBot] Release detected (${createdCount})`
-    : "[SentinelBot] YouTube scan FAILED";
+  const subject = !ok
+    ? "[SentinelBot] YouTube scan FAILED"
+    : createdCount > 0
+      ? `[SentinelBot] Release detected (${createdCount})`
+      : `[SentinelBot] ${reviewItems.length} video(s) skipped, needs review`;
 
   try {
     await sns.send(new PublishCommand({
@@ -764,6 +817,7 @@ exports.handler = async () => {
     const state = await loadWatcherState();
     const lastSeenVideoId = state?.latestVideoId || null;
     const lastSeenPublishedAt = state?.latestPublishedAt || null;
+    const denylist = await loadDenylist();
     const videos = await fetchLatestVideos({
       playlistId,
       limit: MAX_SCAN_RESULTS
@@ -775,11 +829,12 @@ exports.handler = async () => {
     }));
 
     const newVideos = [];
+    const skippedForReview = [];
     for (const video of enrichedVideos) {
       if (shouldStopScanning(video.videoId, lastSeenVideoId)) {
         break;
       }
-      const candidateCheck = getReleaseMetadata(video);
+      const candidateCheck = getReleaseMetadata(video, denylist);
       logStage("youtube-release-candidate-evaluated", {
         traceId: buildTraceId(video.videoId),
         videoId: video.videoId,
@@ -788,11 +843,20 @@ exports.handler = async () => {
         isCandidate: candidateCheck.isCandidate,
         rejectionReason: candidateCheck.rejectionReason,
         score: candidateCheck.score,
+        isDenylisted: candidateCheck.isDenylisted,
+        needsManualReview: candidateCheck.needsManualReview,
         lowConfidence: candidateCheck.lowConfidence,
         debugFilter: DEBUG_FILTER,
         debugBypass: candidateCheck.debugBypass
       });
-      if (!isReleaseCandidate(video)) {
+      if (!candidateCheck.isCandidate) {
+        if (candidateCheck.needsManualReview) {
+          skippedForReview.push({
+            videoId: video.videoId,
+            title: video.title,
+            sourceUrl: video.sourceUrl
+          });
+        }
         continue;
       }
       newVideos.push(video);
@@ -866,6 +930,14 @@ exports.handler = async () => {
       elapsedMs
     });
 
+    if (skippedForReview.length) {
+      logStage("youtube-release-skipped-for-review", {
+        timestamp: requestTimestamp,
+        count: skippedForReview.length,
+        items: skippedForReview
+      });
+    }
+
     await publishScanSummary({
       status: "ok",
       timestamp: requestTimestamp,
@@ -874,6 +946,7 @@ exports.handler = async () => {
       createdCount: events.length,
       duplicateCount,
       detectedTitles: newVideos.map((video) => video.title).filter(Boolean),
+      skippedForReview,
       elapsedMs
     });
 
@@ -938,6 +1011,7 @@ module.exports = {
   buildReleaseEventItem,
   getReleaseMetadata,
   isReleaseCandidate,
+  loadDenylist,
   buildSongItem,
   writeSongItem,
   mergeDraftOntoSongItem,
