@@ -1,0 +1,10 @@
+{
+  "name": "ai-band-quiz-logger",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Logs Are You An AI Band quiz submissions to DynamoDB. Zero npm deps; AWS SDK v3 is provided by the nodejs Lambda runtime.",
+  "main": "index.js",
+  "scripts": {
+    "zip": "rm -f function.zip && zip -q function.zip index.js"
+  }
+}
