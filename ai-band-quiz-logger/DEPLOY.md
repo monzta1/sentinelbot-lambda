@@ -6,9 +6,15 @@ Same AWS account and region as SentinelBot (`us-east-1`).
 
 The static site works fully before this is deployed. The quiz
 runs, scores, and draws the share card client side with no
-backend. Only the anonymous submission log is skipped until
-`js/config.js` `quiz.apiUrl` is set. So this can be deployed
-whenever, with no rush and no site downtime.
+backend. The submission log is skipped until `js/config.js`
+`quiz.apiUrl` is set. So this can be deployed whenever, with no
+rush and no site downtime.
+
+This logger records source IP and resolved city/region per
+submission, the same way the SentinelBot logger does. The quiz
+landing page no longer claims submissions are anonymous, so the
+page and the stored data agree. Keep them in sync: do not
+re-add an anonymity claim while this is collecting IP.
 
 ## DynamoDB table: `ai_band_quiz_submissions`
 
@@ -21,12 +27,16 @@ whenever, with no rush and no site downtime.
 | `score`         | N       | Integer 0 to 10.                           |
 | `category`      | S       | Result category name.                      |
 | `shared`        | BOOL    | Defaults false. Flipped true on share.     |
-| `user_agent`    | S       | Spam triage only.                          |
+| `user_agent`    | S       | Browser string for spam triage.            |
+| `ip`            | S       | Source IP from the request context.        |
+| `location`      | S       | `City, REGION` via ipinfo.io, else unknown.|
 | `email`         | S       | Present only if the visitor typed one.     |
 
 Partition key only, no sort key, no indexes. Billing is
 `PAY_PER_REQUEST` so it costs nothing at rest and pennies at
-quiz volume. `deploy.sh` creates it if missing.
+quiz volume. `deploy.sh` creates it if missing. IP is taken
+server side from the request context; the browser never sends
+it. Location is best effort and fails to `unknown`.
 
 ## One command
 
@@ -36,28 +46,46 @@ cd ai-band-quiz-logger
 ```
 
 It is idempotent. It creates the table, an IAM role scoped to
-`PutItem` and `UpdateItem` on this one table plus CloudWatch
-Logs (`iam-policy.json`), the Lambda (`nodejs22.x`, 128 MB, 10s),
-and a Lambda Function URL with CORS locked to
-`https://shieldbearerusa.com`. It prints the Invoke URL.
+`PutItem`, `UpdateItem`, and `Scan` on this one table plus
+CloudWatch Logs (`iam-policy.json`), the Lambda (`nodejs22.x`,
+128 MB, 10s), and a Lambda Function URL with CORS locked to
+`https://shieldbearerusa.com`, allowing `GET` and `POST` and the
+`x-admin-key` header. It prints the Invoke URL and the admin key.
 
-Override the allowed origin if testing from elsewhere:
+Override the allowed origin or admin key if needed:
 
 ```bash
-QUIZ_ALLOWED_ORIGIN="https://staging.example.com" ./deploy.sh
+QUIZ_ALLOWED_ORIGIN="https://staging.example.com" \
+QUIZ_ADMIN_KEY="a-strong-secret" ./deploy.sh
 ```
+
+The admin key defaults to `shieldbearer-admin-2026`, the same
+value the existing SentinelBot logs admin uses. Set a stronger
+one with `QUIZ_ADMIN_KEY` if you want this separated.
 
 ## Wire the front end
 
 1. `shieldbearer-website/js/config.js` -> set `quiz.apiUrl` to the
    printed Invoke URL.
-2. The quiz page CSP `connect-src` already allows both
-   `https://*.execute-api.us-east-1.amazonaws.com` and
+2. `shieldbearer-website/admin/quiz.html` -> set the `QUIZ_API`
+   constant near the top of its script to the same Invoke URL.
+3. The quiz page and the admin page CSP `connect-src` already
+   allow both `https://*.execute-api.us-east-1.amazonaws.com` and
    `https://*.lambda-url.us-east-1.on.aws`, so either endpoint
    style works with no CSP edit.
-3. `cp are-you-an-ai-band.html are-you-an-ai-band/index.html` to
+4. `cp are-you-an-ai-band.html are-you-an-ai-band/index.html` to
    keep the clean-URL mirror byte-identical, run `npm test`,
    commit, push.
+
+## Admin dashboard
+
+`shieldbearerusa.com/admin/quiz.html` is unlinked, like the
+SentinelBot `admin/logs.html`. Open it directly, enter the
+passphrase (the admin key), and it lists every submission with
+IP, resolved location, score, path, category, shared flag,
+browser, and any volunteered email, plus aggregate counts. It
+calls the same Function URL with a `GET` and the `x-admin-key`
+header.
 
 ## Request shapes
 
@@ -82,6 +110,17 @@ Returns `{ "ok": true }`. Validation rejects bad paths, out of
 range scores, empty or oversized answer arrays, and truncates
 every string field.
 
+Admin list (GET, header `x-admin-key: <key>`):
+
+```
+GET <Invoke URL>
+x-admin-key: shieldbearer-admin-2026
+```
+
+Returns `{ "count": N, "items": [ ... ] }` newest first, capped
+at 5000. A missing or wrong key returns 401. The key check is
+length-then-timing-safe.
+
 ## API Gateway alternative
 
 If you would rather keep every endpoint behind the same HTTP API
@@ -89,11 +128,13 @@ as SentinelBot instead of a Function URL:
 
 1. Skip the Function URL block (comment out step 4 in
    `deploy.sh`).
-2. In the existing HTTP API, add a route `POST /quiz` with a
-   Lambda proxy integration to `ai-band-quiz-logger`, plus an
-   `OPTIONS /quiz` route for preflight.
+2. In the existing HTTP API, add routes `POST /quiz` and
+   `GET /quiz` with a Lambda proxy integration to
+   `ai-band-quiz-logger`, plus an `OPTIONS /quiz` route for
+   preflight. `GET /quiz` is the admin list (key enforced in the
+   function, so the route does not need an authorizer).
 3. Enable CORS on the API for origin `https://shieldbearerusa.com`,
-   methods `POST,OPTIONS`, headers `content-type`.
+   methods `GET,POST,OPTIONS`, headers `content-type,x-admin-key`.
 4. Grant API Gateway permission to invoke the function:
 
    ```bash

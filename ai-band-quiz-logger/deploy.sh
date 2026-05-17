@@ -19,6 +19,7 @@ TABLE="ai_band_quiz_submissions"
 FN="ai-band-quiz-logger"
 ROLE="ai-band-quiz-logger-role"
 ALLOWED_ORIGIN="${QUIZ_ALLOWED_ORIGIN:-https://shieldbearerusa.com}"
+ADMIN_KEY="${QUIZ_ADMIN_KEY:-shieldbearer-admin-2026}"
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
 
 echo "==> Account $ACCOUNT_ID, region $REGION"
@@ -69,7 +70,7 @@ if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2
   aws lambda wait function-updated --function-name "$FN" --region "$REGION"
   aws lambda update-function-configuration \
     --function-name "$FN" \
-    --environment "Variables={QUIZ_TABLE=$TABLE,QUIZ_ALLOWED_ORIGIN=$ALLOWED_ORIGIN}" \
+    --environment "Variables={QUIZ_TABLE=$TABLE,QUIZ_ALLOWED_ORIGIN=$ALLOWED_ORIGIN,QUIZ_ADMIN_KEY=$ADMIN_KEY}" \
     --region "$REGION" >/dev/null
 else
   echo "==> Creating function $FN"
@@ -80,7 +81,7 @@ else
     --handler index.handler \
     --timeout 10 \
     --memory-size 128 \
-    --environment "Variables={QUIZ_TABLE=$TABLE,QUIZ_ALLOWED_ORIGIN=$ALLOWED_ORIGIN}" \
+    --environment "Variables={QUIZ_TABLE=$TABLE,QUIZ_ALLOWED_ORIGIN=$ALLOWED_ORIGIN,QUIZ_ADMIN_KEY=$ADMIN_KEY}" \
     --zip-file fileb://function.zip \
     --region "$REGION" >/dev/null
   aws lambda wait function-active --function-name "$FN" --region "$REGION"
@@ -96,7 +97,7 @@ else
   aws lambda create-function-url-config \
     --function-name "$FN" \
     --auth-type NONE \
-    --cors "AllowOrigins=$ALLOWED_ORIGIN,AllowMethods=POST,AllowHeaders=content-type" \
+    --cors "{\"AllowOrigins\":[\"$ALLOWED_ORIGIN\"],\"AllowMethods\":[\"GET\",\"POST\"],\"AllowHeaders\":[\"content-type\",\"x-admin-key\"]}" \
     --region "$REGION" >/dev/null
   aws lambda add-permission \
     --function-name "$FN" \
@@ -115,10 +116,13 @@ echo " Invoke URL: $URL"
 echo ""
 echo " Next:"
 echo "  1. shieldbearer-website/js/config.js -> quiz.apiUrl = \"$URL\""
-echo "  2. Confirm the quiz page CSP connect-src allows the host"
-echo "     (the page already allows https://*.execute-api...; a"
-echo "      Function URL host is *.lambda-url.us-east-1.on.aws,"
-echo "      add that to connect-src on are-you-an-ai-band.html"
-echo "      and its mirror, or use the API Gateway path instead)."
-echo "  3. Commit and push the static site, then smoke test."
+echo "  2. shieldbearer-website/admin/quiz.html -> set QUIZ_API to:"
+echo "       $URL"
+echo "  3. The quiz page and admin page CSP already allow both"
+echo "     *.execute-api and *.lambda-url us-east-1 hosts."
+echo "  4. Commit and push the static site, then smoke test."
+echo ""
+echo " Admin read endpoint: GET $URL"
+echo " Admin auth header:   x-admin-key: $ADMIN_KEY"
+echo " (override with QUIZ_ADMIN_KEY=... before running this script)"
 echo "============================================================="
