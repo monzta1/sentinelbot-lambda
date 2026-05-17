@@ -2628,7 +2628,16 @@ async function findCachedAnswer(question) {
   if (question.includes("vocal") && (question.includes("ai") || question.includes("generated") || question.includes("synthetic") || question.includes("real") || question.includes("human") || question.includes("sing") || question.includes("sung") || question.includes("who")))
     return CACHED_ANSWERS["are the vocals ai"];
 
-  if (question.includes("suno") || (question.includes("ideation") && question.includes("tool")))
+  // A Suno question that is really a quiz-grouping objection (why is
+  // Suno lumped in with assistive tools) falls through to the LLM,
+  // which carries the AI BAND QUIZ OBJECTION DEFENSES Suno paragraph.
+  // The plain "is Suno used / involved in production" question keeps
+  // its deterministic cached answer.
+  var sunoQuizObjection = question.includes("suno") &&
+    (question.includes("quiz") || question.includes("group") ||
+     question.includes("lump") || question.includes("are you an ai band"));
+  if (!sunoQuizObjection &&
+      (question.includes("suno") || (question.includes("ideation") && question.includes("tool"))))
     return CACHED_ANSWERS["is suno used"];
 
   if (question.includes("guitar") && !question.includes("tuning") && (question.includes("brand") || question.includes("what") || question.includes("play") || question.includes("which")))

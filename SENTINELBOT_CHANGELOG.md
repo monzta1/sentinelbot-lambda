@@ -7,6 +7,9 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.12.2 - May 2026
+- The deterministic Suno cache route now falls through to the LLM when the question is a quiz-grouping objection (contains quiz, group, lump, or "are you an ai band"), so those reach the v1.12.1 AI BAND QUIZ OBJECTION DEFENSES Suno paragraph. The plain "is Suno used / involved in production" question keeps its deterministic cached answer. Code path change only; prompt unchanged.
+
 ## v1.12.1 - May 2026
 - Extended the AI BAND QUIZ OBJECTION DEFENSES block with a Suno and generative AI defense, for when someone asks why generative platforms are grouped into the quiz alongside assistive production tools. Prompt context only, no code path change. Pushed into config:system-prompt-expanded (base section only; knowledge sections preserved).
 
