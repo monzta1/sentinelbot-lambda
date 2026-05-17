@@ -7,6 +7,9 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.12.1 - May 2026
+- Extended the AI BAND QUIZ OBJECTION DEFENSES block with a Suno and generative AI defense, for when someone asks why generative platforms are grouped into the quiz alongside assistive production tools. Prompt context only, no code path change. Pushed into config:system-prompt-expanded (base section only; knowledge sections preserved).
+
 ## v1.12.0 - May 2026
 - SentinelBot can now field Are You An AI Band quiz objections. Added an AI BAND QUIZ OBJECTION DEFENSES block to SYSTEM_PROMPT with concise, on-voice rebuttals for Trigger, Superior Drummer, Melodyne, Kemper/Quad Cortex/Neural DSP/Tonex, Ozone/Gullfoss, and the recommendation engines, ending on the manifesto and quiz links.
 - Aligned the Superior Drummer defense to "programmed model" rather than "statistical model" to match the corrected quiz copy.
