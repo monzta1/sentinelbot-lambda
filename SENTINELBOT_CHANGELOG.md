@@ -7,6 +7,11 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.12.0 - May 2026
+- SentinelBot can now field Are You An AI Band quiz objections. Added an AI BAND QUIZ OBJECTION DEFENSES block to SYSTEM_PROMPT with concise, on-voice rebuttals for Trigger, Superior Drummer, Melodyne, Kemper/Quad Cortex/Neural DSP/Tonex, Ozone/Gullfoss, and the recommendation engines, ending on the manifesto and quiz links.
+- Aligned the Superior Drummer defense to "programmed model" rather than "statistical model" to match the corrected quiz copy.
+- Pushed into the production prompt at config:system-prompt-expanded (base section only; YouTube and Facebook knowledge sections untouched). No code-path change; prompt context only.
+
 ## v1.11.0 - May 2026
 - YouTube release-detector: added a score-zero guard. A video with none of the release keywords (music, official, single, lyric, live) in its title is no longer auto-published, regardless of duration. This closes the gap that let the 3:06 Short "AI band doing AI things" auto-publish as a full release after YouTube served it as a regular video.
 - Added an operator-controlled denylist. The detector loads `config:release-detector-denylist` (DynamoDB, shape `{ id, videoIds: [] }`) and never treats a listed video ID as a release. Fails open so a DynamoDB blip never stalls a scan.
