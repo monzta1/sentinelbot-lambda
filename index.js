@@ -2014,7 +2014,7 @@ RESPONSE STYLE:
 Short sentences. Strong statements. No filler. Do not echo the question. Answer directly.
 2 to 5 sentences max unless the user explicitly asks for more.
 Never use markdown formatting. No asterisks. No bold. No headers. Plain text only.
-Never use em dashes (—). Use a period or a new sentence instead.
+Never use em dashes or en dashes in any response, ever. Not for asides, not for emphasis, not in lists, not anywhere. Use a comma, a period, or a new sentence. This is absolute. A response containing a dash character is a failed response. If a sentence wants a dash, rewrite the sentence. Plain hyphens in words are fine.
 Never say "I don't have that information" for known Shieldbearer facts. Answer from the documented site context.
 
 LINK FORMAT:
@@ -2744,6 +2744,25 @@ function isUsableAnswer(answer) {
 
   const lower = text.toLowerCase();
   return !weakPatterns.some((pattern) => lower.includes(pattern));
+}
+
+// Hard guarantee that no response ever contains a dash character,
+// no matter the source: LLM output, a cached answer, or a
+// deterministic song/release string. The prompt instruction reduces
+// dashes but cannot guarantee zero, because the model imitates the
+// prompt's own style. This is the enforcement. Real em, en, figure,
+// and horizontal-bar dashes become a comma. Plain hyphens (AI-assisted,
+// Watchman-class, URLs, the allowed double hyphen) are left untouched.
+function stripEmDashes(answer) {
+  if (typeof answer !== "string" || !answer) return answer;
+  return answer
+    .replace(/\s*[‒–—―]\s*/g, ", ")
+    .replace(/,\s*,/g, ", ")
+    .replace(/\s+,/g, ",")
+    .replace(/,\s*\./g, ".")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^[\s,]+/, "")
+    .trim();
 }
 
 function markRepeat(question) {
@@ -3567,6 +3586,8 @@ exports.handler = async (event) => {
       }
       errorMessage = errorMessage || null;
     }
+
+    answer = stripEmDashes(answer);
 
     const responseTimeMs = Date.now() - startedAt;
 

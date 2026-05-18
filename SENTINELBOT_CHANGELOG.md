@@ -7,6 +7,10 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.13.0 - May 2026
+- Hard guarantee: no SentinelBot response can contain a dash character. Added stripEmDashes, applied to the answer at the single response chokepoint before it is logged and returned, so LLM output, cached answers, and deterministic song/release strings are all covered. Real em, en, figure, and horizontal-bar dashes become a comma; plain hyphens (AI-assisted, Watchman-class, URLs, the allowed double hyphen) are untouched.
+- Strengthened the RESPONSE STYLE no-dash instruction to an absolute rule. The instruction reduces dashes but the sanitizer is the enforcement, since the model imitates the prompt's own style. Pushed into config:system-prompt-expanded (base section only; knowledge sections preserved).
+
 ## v1.12.2 - May 2026
 - The deterministic Suno cache route now falls through to the LLM when the question is a quiz-grouping objection (contains quiz, group, lump, or "are you an ai band"), so those reach the v1.12.1 AI BAND QUIZ OBJECTION DEFENSES Suno paragraph. The plain "is Suno used / involved in production" question keeps its deterministic cached answer. Code path change only; prompt unchanged.
 
