@@ -252,6 +252,51 @@ Watch on YouTube
   assert(det.shouldStopScanning("vid1", null) === false, "continues when no lastSeen recorded yet");
 }
 
+// --- cleanSongMeaning: strips promo noise (mirrors shield-cli cleaner) ---
+{
+  assert(det.cleanSongMeaning(null) === null, "cleanSongMeaning: null passes through");
+  assert(det.cleanSongMeaning(undefined) === undefined, "cleanSongMeaning: undefined passes through");
+  assertEqual(det.cleanSongMeaning(""), "", "cleanSongMeaning: empty passes through");
+
+  const clean = "First paragraph.\n\nSecond paragraph.";
+  assertEqual(det.cleanSongMeaning(clean), clean, "cleanSongMeaning: clean prose unchanged");
+
+  const cta = "Real prose.\n\n📖 Scripture Behind the Song\nExodus 3:7-10 · Exodus 5:1\nPsalm 34:17 · John 8:36";
+  assertEqual(det.cleanSongMeaning(cta), "Real prose.", "cleanSongMeaning: emoji-prefix CTA paragraph dropped");
+
+  const tags = "Real prose.\n\n#Shieldbearer #ChristianMusic";
+  assertEqual(det.cleanSongMeaning(tags), "Real prose.", "cleanSongMeaning: hashtag-only paragraph dropped");
+
+  const url = "Real prose.\n\nhttps://shieldbearerusa.com";
+  assertEqual(det.cleanSongMeaning(url), "Real prose.", "cleanSongMeaning: URL-only paragraph dropped");
+
+  const scriptureList = "Real prose.\n\nExodus 3:7-10 · Exodus 5:1 · Exodus 6:6";
+  assertEqual(det.cleanSongMeaning(scriptureList), "Real prose.", "cleanSongMeaning: scripture-list paragraph dropped");
+
+  const proseWithOneRef = "There are still Pharaohs and still chains. Exodus 5:1.";
+  assertEqual(det.cleanSongMeaning(proseWithOneRef), proseWithOneRef, "cleanSongMeaning: single citation preserved");
+
+  assert(det.isPromoLine("📖 Scripture Behind the Song"), "isPromoLine: emoji-prefix");
+  assert(det.isPromoLine("#tag1 #tag2"), "isPromoLine: hashtag-only");
+  assert(det.isPromoLine("https://example.com/x"), "isPromoLine: URL-only");
+  assert(det.isPromoLine("Exodus 3:7-10 · Exodus 5:1"), "isPromoLine: scripture-list");
+  assert(!det.isPromoLine("Real prose. Exodus 5:1."), "isPromoLine: prose with one citation NOT promo");
+}
+
+// --- buildEventStreamItem: emits clean songMeaning when input has YouTube noise ---
+{
+  const dirtyMeaning = "A cry that shook a nation.\n\n📖 Scripture Behind the Song\nExodus 5:1 · Psalm 34:17\n\n#Shieldbearer #ChristianMusic";
+  const item = det.buildEventStreamItem({
+    songId: "test-id",
+    title: "Test",
+    sourceUrl: "https://www.youtube.com/watch?v=test-id",
+    songContextMeaning: dirtyMeaning,
+    timestamp: "2026-05-21T00:00:00Z",
+    publishedAt: "2026-05-21T00:00:00Z"
+  });
+  assertEqual(item.payload.songMeaning, "A cry that shook a nation.", "buildEventStreamItem: songMeaning sanitized");
+}
+
 console.log("\n=========================================");
 console.log(`Release-detector tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

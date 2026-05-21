@@ -132,6 +132,56 @@ function isShortFormEntry(title, durationSeconds) {
   return isShortFormTitle(title) || Number(durationSeconds || 0) > 0 && Number(durationSeconds || 0) < 120;
 }
 
+// ============================================================
+// songMeaning sanitizer (mirrors tools/shield-cli/bin/shield.js).
+//
+// YouTube descriptions arrive with hashtag dumps, emoji-prefix
+// CTAs, scripture-list lines, and the artist URL. Any of that
+// landing in songMeaning propagates to site.json and then into
+// the publisher-stamped static index.html block. Strip the
+// promo noise here so future auto-detected releases never need a
+// manual shield-cli pass to clean up.
+//
+// Algorithm: split into paragraphs on blank lines. Drop any
+// paragraph that contains a promo-signal line. Single scripture
+// citations inside prose paragraphs survive (the list pattern
+// requires 2+ refs joined by a punctuation separator).
+// ============================================================
+
+const PROMO_LEADING_EMOJI_RE = /^\s*[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F004}\u{1F0CF}]/u;
+const HASHTAG_ONLY_LINE_RE = /^\s*#\S+(?:\s+#\S+)*\s*$/;
+const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i;
+const SCRIPTURE_LIST_LINE_RE = /^\s*(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+\d+:\d+(?:-\d+)?(?:\s*[·,;]\s*(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+\d+:\d+(?:-\d+)?)+\s*$/;
+
+function isPromoLine(line) {
+  if (!line) return false;
+  if (PROMO_LEADING_EMOJI_RE.test(line)) return true;
+  if (HASHTAG_ONLY_LINE_RE.test(line)) return true;
+  if (URL_ONLY_LINE_RE.test(line)) return true;
+  if (SCRIPTURE_LIST_LINE_RE.test(line)) return true;
+  return false;
+}
+
+function cleanSongMeaning(raw) {
+  if (raw == null) return raw;
+  const str = String(raw);
+  if (!str.trim()) return str;
+
+  const normalized = str.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const paragraphs = normalized.split(/\n\s*\n/);
+
+  const cleaned = paragraphs.filter((paragraph) => {
+    const lines = paragraph.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return false;
+    return !lines.some(isPromoLine);
+  });
+
+  return cleaned
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function buildSongContextFromDescription(description, title = "") {
   const normalized = normalizeSongDescription(description);
   const fallbackTitle = String(title || "").trim();
@@ -454,7 +504,7 @@ function buildEventStreamItem(releaseEvent) {
   const streamKey = timestamp;
   const lyrics = String(releaseEvent.lyrics || releaseEvent.songContextSummary || "").trim();
   const artworkUrl = String(releaseEvent.artworkUrl || releaseEvent.sourceUrl || releaseEvent.youtubeUrl || "").trim();
-  const songMeaning = String(releaseEvent.songMeaning || releaseEvent.songContextMeaning || releaseEvent.songContextSummary || "").trim();
+  const songMeaning = cleanSongMeaning(String(releaseEvent.songMeaning || releaseEvent.songContextMeaning || releaseEvent.songContextSummary || "").trim());
   return {
     id: `${songId}#${streamKey}#${eventType}`,
     songId,
@@ -885,7 +935,7 @@ exports.handler = async () => {
             lyrics: video.lyrics || "",
             artworkUrl: video.sourceUrl || "",
             artwork: video.sourceUrl || "",
-            songMeaning: video.songContextMeaning || video.songContextSummary || ""
+            songMeaning: cleanSongMeaning(video.songContextMeaning || video.songContextSummary || "")
           }).catch((error) => {
             logStage("song-release-eventstream-write-failed", {
               traceId: buildTraceId(video.videoId),
@@ -1017,5 +1067,8 @@ module.exports = {
   mergeDraftOntoSongItem,
   shouldStopScanning,
   normalizeSongTitle,
-  extractLyricsFromDescription
+  extractLyricsFromDescription,
+  cleanSongMeaning,
+  isPromoLine,
+  buildEventStreamItem
 };
