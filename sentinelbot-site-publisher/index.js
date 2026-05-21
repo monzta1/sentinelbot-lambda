@@ -1004,6 +1004,280 @@ async function getExistingSiteJson() {
   }
 }
 
+// ============================================================
+// index.html featured-track stamper.
+//
+// The homepage ships a static fallback block for the featured
+// release between marker comments. The featured-release.js
+// client overwrites that block on first paint from site.json,
+// but the static fallback is what no-JS, crawlers, and any
+// site.json fetch failure see. If we only update site.json and
+// leave the static block frozen on a past release, the fallback
+// drifts behind reality. Every site.json write also rewrites
+// the static block so the two stay locked together.
+//
+// renderFeaturedTrackHtml mirrors the derivation in
+// js/featured-release.js exactly: split songMeaning on blank
+// lines, first paragraph becomes the visible desc, all
+// paragraphs render in the notes panel. Anything more elaborate
+// risks diverging from the client renderer.
+// ============================================================
+
+const INDEX_HTML_PATH = process.env.INDEX_HTML_PATH || "index.html";
+const STAMP_BEGIN_MARKER = "<!-- featured-track:stamp:begin";
+const STAMP_END_MARKER = "<!-- featured-track:stamp:end -->";
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function slugifyTitle(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function splitSongMeaningParagraphs(value) {
+  if (!value) return [];
+  return String(value)
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function renderFeaturedTrackHtml(featuredRelease) {
+  if (!featuredRelease || !featuredRelease.videoId || !featuredRelease.title) {
+    return null;
+  }
+
+  const title = String(featuredRelease.title);
+  const videoId = String(featuredRelease.videoId);
+  const slug = slugifyTitle(title);
+  const watchUrl = featuredRelease.sourceUrl || `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+  const embedUrl = `https://www.youtube.com/embed/${encodeURIComponent(videoId)}`;
+  const artworkUrl = featuredRelease.artwork || `https://img.youtube.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`;
+  const publishedYear = featuredRelease.publishedAt
+    ? String(featuredRelease.publishedAt).slice(0, 4)
+    : "";
+
+  const paragraphs = splitSongMeaningParagraphs(featuredRelease.songMeaning);
+  const desc = paragraphs[0] || "";
+  const notesHtml = paragraphs.length
+    ? paragraphs.map((p) => `            <p>${escapeHtml(p)}</p>`).join("\n")
+    : `            <p></p>`;
+
+  const metaSuffix = publishedYear ? ` &middot; ${escapeHtml(publishedYear)}` : "";
+
+  return [
+    `      <article class="featured-track" id="featured-release">`,
+    `        <div class="featured-track__media">`,
+    `          <div class="featured-track__panel featured-track__media-panel">`,
+    `            <figure class="featured-track__artwork" aria-label="${escapeHtml(title)} artwork thumbnail">`,
+    `              <img src="${escapeHtml(artworkUrl)}" alt="${escapeHtml(title)} video thumbnail" width="480" height="360">`,
+    `            </figure>`,
+    `            <div class="featured-track__body">`,
+    `              <span class="badge">New Release</span>`,
+    `              <h2 class="featured-track__title" id="release-heading">${escapeHtml(title)}</h2>`,
+    `              <p class="featured-track__meta">Featured Track${metaSuffix}</p>`,
+    `              <p class="featured-track__desc">`,
+    `                ${escapeHtml(desc)}`,
+    `              </p>`,
+    `              <div class="featured-track__player-wrap">`,
+    `                <iframe`,
+    `                  class="featured-track__player"`,
+    `                  src="${escapeHtml(embedUrl)}"`,
+    `                  title="YouTube player for ${escapeHtml(title)}"`,
+    `                  loading="lazy"`,
+    `                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"`,
+    `                  allowfullscreen>`,
+    `                </iframe>`,
+    `              </div>`,
+    `              <div class="featured-track__actions">`,
+    `                <a href="${escapeHtml(watchUrl)}" target="_blank" rel="noopener" class="btn btn--red">Watch Now</a>`,
+    `                <a href="/song-meanings#${escapeHtml(slug)}" class="btn btn--ghost">Read the Meaning</a>`,
+    `              </div>`,
+    `            </div>`,
+    `          </div>`,
+    `        </div>`,
+    `        <aside class="featured-track__panel featured-track__lyrics" aria-label="${escapeHtml(title)} notes panel">`,
+    `          <h3 class="featured-track__lyrics-title">${escapeHtml(title)} Notes</h3>`,
+    `          <div class="featured-track__lyrics-scroll">`,
+    notesHtml,
+    `          </div>`,
+    `        </aside>`,
+    `      </article>`
+  ].join("\n");
+}
+
+function spliceFeaturedTrackBlock(html, replacementInner) {
+  const beginIdx = html.indexOf(STAMP_BEGIN_MARKER);
+  if (beginIdx === -1) {
+    return { ok: false, reason: "begin_marker_missing", html };
+  }
+
+  // Find end of the begin marker comment so we keep its full body.
+  const beginCloseIdx = html.indexOf("-->", beginIdx);
+  if (beginCloseIdx === -1) {
+    return { ok: false, reason: "begin_marker_unterminated", html };
+  }
+  const beginMarkerEnd = beginCloseIdx + 3; // include "-->"
+
+  const endIdx = html.indexOf(STAMP_END_MARKER, beginMarkerEnd);
+  if (endIdx === -1) {
+    return { ok: false, reason: "end_marker_missing", html };
+  }
+
+  const before = html.slice(0, beginMarkerEnd);
+  const after = html.slice(endIdx);
+  const next = `${before}\n${replacementInner}\n      ${after}`;
+
+  if (next === html) {
+    return { ok: true, changed: false, html };
+  }
+  return { ok: true, changed: true, html: next };
+}
+
+async function getExistingIndexHtml() {
+  const url = `${buildGitHubContentsUrl(INDEX_HTML_PATH)}?ref=${encodeURIComponent(GITHUB_BRANCH)}`;
+  try {
+    const result = await githubRequestWithRetry(url, { method: "GET" }, { path: INDEX_HTML_PATH });
+    const content = decodeContent(result?.data?.content || "");
+    return {
+      exists: true,
+      sha: result?.data?.sha || null,
+      content,
+      contentHash: hashContent(content),
+      gitUrl: result?.data?.html_url || null,
+      status: result.status
+    };
+  } catch (error) {
+    if (error.status === 404) {
+      return { exists: false, sha: null, content: null, contentHash: null, gitUrl: null, status: 404 };
+    }
+    throw error;
+  }
+}
+
+async function stampIndexHtml(featuredRelease, releaseId) {
+  if (!featuredRelease || !featuredRelease.videoId || !featuredRelease.title) {
+    logStage("stamp-index-skip", {
+      releaseId,
+      reason: "no_featured_release",
+      path: INDEX_HTML_PATH
+    });
+    return { changed: false, reason: "no_featured_release" };
+  }
+
+  const replacement = renderFeaturedTrackHtml(featuredRelease);
+  if (!replacement) {
+    logStage("stamp-index-skip", {
+      releaseId,
+      reason: "render_empty",
+      path: INDEX_HTML_PATH
+    });
+    return { changed: false, reason: "render_empty" };
+  }
+
+  const existing = await getExistingIndexHtml();
+  if (!existing.exists) {
+    logStage("stamp-index-skip", {
+      releaseId,
+      reason: "index_missing",
+      path: INDEX_HTML_PATH
+    });
+    return { changed: false, reason: "index_missing" };
+  }
+
+  const spliceResult = spliceFeaturedTrackBlock(existing.content, replacement);
+  if (!spliceResult.ok) {
+    logStage("stamp-index-skip", {
+      releaseId,
+      reason: spliceResult.reason,
+      path: INDEX_HTML_PATH
+    });
+    return { changed: false, reason: spliceResult.reason };
+  }
+
+  if (!spliceResult.changed) {
+    logStage("stamp-index-no-op", {
+      releaseId,
+      path: INDEX_HTML_PATH,
+      videoId: featuredRelease.videoId
+    });
+    return { changed: false, reason: "unchanged" };
+  }
+
+  const nextHash = hashContent(spliceResult.html);
+  const body = {
+    message: `auto: featured-track stamp ${featuredRelease.videoId}`,
+    content: encodeContent(spliceResult.html),
+    branch: GITHUB_BRANCH,
+    sha: existing.sha
+  };
+
+  logStage("stamp-index-put-attempt", {
+    releaseId,
+    path: INDEX_HTML_PATH,
+    branch: GITHUB_BRANCH,
+    videoId: featuredRelease.videoId,
+    existingHash: existing.contentHash,
+    contentHash: nextHash
+  });
+
+  let putResult;
+  try {
+    putResult = await githubRequestWithRetry(buildGitHubContentsUrl(INDEX_HTML_PATH), {
+      method: "PUT",
+      body
+    }, { path: INDEX_HTML_PATH });
+  } catch (error) {
+    // 409 = sha race; the next publisher run will reconcile. Don't fail
+    // the whole invocation since site.json is already written.
+    if (error.status === 409) {
+      logStage("stamp-index-sha-race", {
+        releaseId,
+        path: INDEX_HTML_PATH,
+        videoId: featuredRelease.videoId,
+        status: 409
+      });
+      return { changed: false, reason: "sha_race" };
+    }
+    logStage("stamp-index-failed", {
+      releaseId,
+      path: INDEX_HTML_PATH,
+      videoId: featuredRelease.videoId,
+      status: error.status || null,
+      error: error.message
+    });
+    throw error;
+  }
+
+  logStage("stamp-index-put-response", {
+    releaseId,
+    path: INDEX_HTML_PATH,
+    videoId: featuredRelease.videoId,
+    status: putResult.status,
+    sha: putResult?.data?.content?.sha || null,
+    commitSha: putResult?.data?.commit?.sha || null
+  });
+
+  return {
+    changed: true,
+    reason: "stamped",
+    path: INDEX_HTML_PATH,
+    videoId: featuredRelease.videoId,
+    sha: putResult?.data?.content?.sha || null,
+    commitSha: putResult?.data?.commit?.sha || null,
+    contentHash: nextHash
+  };
+}
+
 async function writeSiteJsonToGitHub(siteArtifact, releaseId) {
   const content = buildCanonicalSiteArtifact(siteArtifact);
   const contentHash = hashContent(content);
@@ -1215,6 +1489,37 @@ exports.handler = async (event = {}) => {
       contentHash: writeResult.contentHash
     });
 
+    // Stamp index.html's static featured-track block so the no-JS
+    // fallback never drifts behind the latest released song. Runs on
+    // every invocation -- including no-op site.json writes -- because
+    // index.html may have been hand-touched between runs. Failure
+    // here must not fail the whole invocation; site.json is already
+    // committed and the next run will retry the stamp.
+    let stampResult = { changed: false, reason: "not_attempted" };
+    try {
+      stampResult = await stampIndexHtml(siteArtifact?.homepage?.featuredRelease || null, releaseId);
+    } catch (stampError) {
+      logStage("stamp-index-error", {
+        releaseId,
+        path: INDEX_HTML_PATH,
+        error: stampError.message
+      });
+      stampResult = { changed: false, reason: "error", error: stampError.message };
+    }
+
+    // End-of-run assertion: site.json featured videoId and the
+    // stamped block should agree. Logged as a warning, never thrown,
+    // so a transient skip (e.g. marker missing in a future refactor)
+    // is visible in CloudWatch without failing the run.
+    const expectedVideoId = siteArtifact?.homepage?.featuredRelease?.videoId || "";
+    if (expectedVideoId && stampResult.changed === false && stampResult.reason !== "unchanged" && stampResult.reason !== "not_attempted") {
+      logStage("stamp-index-assertion-warn", {
+        releaseId,
+        expectedVideoId,
+        stampReason: stampResult.reason || "unknown"
+      });
+    }
+
     return {
       statusCode: 200,
       body: JSON.stringify({
@@ -1228,7 +1533,13 @@ exports.handler = async (event = {}) => {
         sha: writeResult.sha || null,
         gitUrl: writeResult.gitUrl || null,
         commitSha: writeResult.commitSha || null,
-        eventCount
+        eventCount,
+        stamp: {
+          changed: stampResult.changed === true,
+          reason: stampResult.reason || null,
+          videoId: stampResult.videoId || null,
+          commitSha: stampResult.commitSha || null
+        }
       })
     };
   } catch (error) {
@@ -1278,5 +1589,12 @@ module.exports = {
   normalizeSongTableItem,
   buildSongView,
   buildEmptySiteArtifact,
-  hashContent
+  hashContent,
+  renderFeaturedTrackHtml,
+  spliceFeaturedTrackBlock,
+  stampIndexHtml,
+  getExistingIndexHtml,
+  escapeHtml,
+  slugifyTitle,
+  splitSongMeaningParagraphs
 };

@@ -860,6 +860,148 @@ function assertEqual(actual, expected, label) {
   assert(!pub.shouldAutoApprove(cronEvent, "youtube", "youtube"), "non-array allowlist does NOT auto-approve");
 }
 
+// --- escapeHtml: blocks the obvious injection vectors in stamped HTML ---
+{
+  assertEqual(pub.escapeHtml("a & b"), "a &amp; b", "ampersand escaped");
+  assertEqual(pub.escapeHtml('<script>"x"</script>'), "&lt;script&gt;&quot;x&quot;&lt;/script&gt;", "tags and quotes escaped");
+  assertEqual(pub.escapeHtml("it's"), "it&#39;s", "single quote escaped");
+  assertEqual(pub.escapeHtml(null), "", "null -> empty string");
+  assertEqual(pub.escapeHtml(undefined), "", "undefined -> empty string");
+}
+
+// --- slugifyTitle: matches js/featured-release.js slug derivation ---
+{
+  assertEqual(pub.slugifyTitle("Let My People Go"), "let-my-people-go", "spaces -> hyphens");
+  assertEqual(pub.slugifyTitle("Worth It All!"), "worth-it-all", "punctuation stripped");
+  assertEqual(pub.slugifyTitle("  Galilean  "), "galilean", "trim + lower");
+  assertEqual(pub.slugifyTitle(""), "", "empty -> empty");
+}
+
+// --- splitSongMeaningParagraphs: blank-line splits, mirrors featured-release.js ---
+{
+  const meaning = "First para.\n\nSecond para.\n\n  \n\nThird para.";
+  assertEqual(pub.splitSongMeaningParagraphs(meaning), [
+    "First para.",
+    "Second para.",
+    "Third para."
+  ], "splits on blank lines, drops whitespace-only paragraphs");
+  assertEqual(pub.splitSongMeaningParagraphs(""), [], "empty -> []");
+  assertEqual(pub.splitSongMeaningParagraphs(null), [], "null -> []");
+}
+
+// --- renderFeaturedTrackHtml: null in -> null out (caller skips stamp) ---
+{
+  assertEqual(pub.renderFeaturedTrackHtml(null), null, "null featuredRelease -> null");
+  assertEqual(pub.renderFeaturedTrackHtml({}), null, "empty featuredRelease -> null");
+  assertEqual(pub.renderFeaturedTrackHtml({ videoId: "x" }), null, "videoId without title -> null");
+  assertEqual(pub.renderFeaturedTrackHtml({ title: "x" }), null, "title without videoId -> null");
+}
+
+// --- renderFeaturedTrackHtml: shape matches static fallback block ---
+{
+  const fr = {
+    title: "Let My People Go",
+    videoId: "0lUJcLKIt0o",
+    sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o",
+    artwork: "https://img.youtube.com/vi/0lUJcLKIt0o/hqdefault.jpg",
+    songMeaning: "A cry that shook a nation.\n\nOne man walked in.\n\nThere are still Pharaohs.",
+    publishedAt: "2026-04-25T20:00:00Z"
+  };
+  const html = pub.renderFeaturedTrackHtml(fr);
+  assert(html.includes('id="featured-release"'), "renders id=featured-release");
+  assert(html.includes('id="release-heading"'), "renders id=release-heading");
+  assert(html.includes("Let My People Go"), "title embedded");
+  assert(html.includes("Let My People Go Notes"), "notes panel title built from title");
+  assert(html.includes("Featured Track &middot; 2026"), "meta line carries year");
+  assert(html.includes("/song-meanings#let-my-people-go"), "meaning link uses slug");
+  assert(html.includes("https://www.youtube.com/embed/0lUJcLKIt0o"), "embed URL built from videoId");
+  assert(html.includes("https://www.youtube.com/watch?v=0lUJcLKIt0o"), "watch URL preserved");
+  assert(html.includes("A cry that shook a nation."), "first paragraph becomes desc");
+  assert(html.includes("<p>One man walked in.</p>"), "middle paragraph appears in notes");
+  assert(html.includes("<p>There are still Pharaohs.</p>"), "last paragraph appears in notes");
+  assert(html.includes('class="featured-track"'), "outer article class preserved");
+  assert(html.startsWith("      <article"), "leading indent matches index.html (6 spaces)");
+}
+
+// --- renderFeaturedTrackHtml: HTML in title and meaning gets escaped ---
+{
+  const fr = {
+    title: 'A&B <script>',
+    videoId: "abc123",
+    songMeaning: "Line with <tag> & quote \"x\"."
+  };
+  const html = pub.renderFeaturedTrackHtml(fr);
+  assert(!html.includes("<script>"), "raw <script> from title NOT present");
+  assert(html.includes("A&amp;B &lt;script&gt;"), "title escaped");
+  assert(html.includes("&lt;tag&gt;"), "meaning escaped");
+  assert(html.includes("&amp;"), "ampersand in meaning escaped");
+}
+
+// --- renderFeaturedTrackHtml: falls back to img.youtube.com when artwork missing ---
+{
+  const fr = { title: "X", videoId: "zzz" };
+  const html = pub.renderFeaturedTrackHtml(fr);
+  assert(html.includes("https://img.youtube.com/vi/zzz/hqdefault.jpg"), "artwork fallback uses videoId");
+  assert(html.includes("https://www.youtube.com/watch?v=zzz"), "watch URL fallback uses videoId");
+  assert(!html.includes("&middot;"), "no year suffix when publishedAt missing");
+}
+
+// --- spliceFeaturedTrackBlock: rewrites between markers ---
+{
+  const before = [
+    "<html>",
+    "  <body>",
+    "      <!-- featured-track:stamp:begin",
+    "           publisher rewrites between markers. -->",
+    "      <article class=\"featured-track\" id=\"featured-release\">OLD</article>",
+    "      <!-- featured-track:stamp:end -->",
+    "  </body>",
+    "</html>"
+  ].join("\n");
+  const replacement = "      <article class=\"featured-track\" id=\"featured-release\">NEW</article>";
+  const out = pub.spliceFeaturedTrackBlock(before, replacement);
+  assert(out.ok === true, "splice ok when both markers present");
+  assert(out.changed === true, "splice reports changed when content differs");
+  assert(out.html.includes("NEW</article>"), "replacement inserted");
+  assert(!out.html.includes("OLD</article>"), "old content removed");
+  assert(out.html.includes("publisher rewrites between markers. -->"), "begin marker body preserved");
+  assert(out.html.includes("<!-- featured-track:stamp:end -->"), "end marker preserved");
+}
+
+// --- spliceFeaturedTrackBlock: missing begin marker = safe no-op ---
+{
+  const html = "<html><body>no markers here</body></html>";
+  const out = pub.spliceFeaturedTrackBlock(html, "anything");
+  assert(out.ok === false, "splice not ok when begin marker missing");
+  assertEqual(out.reason, "begin_marker_missing", "reports begin_marker_missing reason");
+  assertEqual(out.html, html, "html returned unchanged on missing marker");
+}
+
+// --- spliceFeaturedTrackBlock: missing end marker = safe no-op ---
+{
+  const html = [
+    "<html>",
+    "      <!-- featured-track:stamp:begin -->",
+    "      <article>x</article>",
+    "</html>"
+  ].join("\n");
+  const out = pub.spliceFeaturedTrackBlock(html, "anything");
+  assert(out.ok === false, "splice not ok when end marker missing");
+  assertEqual(out.reason, "end_marker_missing", "reports end_marker_missing reason");
+  assertEqual(out.html, html, "html returned unchanged on missing end marker");
+}
+
+// --- spliceFeaturedTrackBlock: identical content -> changed=false ---
+{
+  const replacement = "      <article class=\"featured-track\" id=\"featured-release\">SAME</article>";
+  const beginMarker = "      <!-- featured-track:stamp:begin\n           rewrites between markers. -->";
+  const endMarker = "<!-- featured-track:stamp:end -->";
+  const initial = `<html>\n${beginMarker}\n${replacement}\n      ${endMarker}\n</html>`;
+  const out = pub.spliceFeaturedTrackBlock(initial, replacement);
+  assert(out.ok === true, "splice ok on idempotent rewrite");
+  assert(out.changed === false, "no-op when stamped content matches");
+}
+
 console.log("\n=========================================");
 console.log(`Publisher tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
