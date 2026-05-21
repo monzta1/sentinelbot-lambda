@@ -545,8 +545,145 @@ try {
   console.log("PASS scripture-ingest");
   runScriptureMissingCase();
   console.log("PASS scripture-missing");
+  runCleanSongMeaningCases();
+  console.log("PASS clean-song-meaning");
   console.log("ALL TESTS PASSED");
 } catch (error) {
   console.error(`FAIL ${error.message}`);
   process.exit(1);
+}
+
+function runCleanSongMeaningCases() {
+  // Direct unit tests for the songMeaning sanitizer. Use require()
+  // because main() is now guarded with require.main === module so
+  // loading the module does not start the CLI.
+  const { cleanSongMeaning, isPromoLine } = require("../bin/shield.js");
+
+  // --- pass-through for null / empty ---
+  assert(cleanSongMeaning(null) === null, "clean-song-meaning: null passes through");
+  assert(cleanSongMeaning(undefined) === undefined, "clean-song-meaning: undefined passes through");
+  assert(cleanSongMeaning("") === "", "clean-song-meaning: empty string passes through");
+  assert(cleanSongMeaning("   ") === "   ", "clean-song-meaning: whitespace-only passes through");
+
+  // --- clean prose passes through verbatim ---
+  const clean = "First paragraph.\n\nSecond paragraph. With multiple sentences.";
+  assert(
+    cleanSongMeaning(clean) === clean,
+    "clean-song-meaning: clean prose unchanged"
+  );
+
+  // --- emoji-prefix CTA paragraph dropped ---
+  const withCta = "Real prose paragraph.\n\n📖 Scripture Behind the Song\nExodus 3:7-10 · Exodus 5:1\nPsalm 34:17 · John 8:36";
+  assert(
+    cleanSongMeaning(withCta) === "Real prose paragraph.",
+    "clean-song-meaning: emoji-prefix CTA paragraph dropped"
+  );
+
+  // --- hashtag-only paragraph dropped ---
+  const withHashtags = "Real prose.\n\n#Shieldbearer #ChristianMusic #FaithMusic";
+  assert(
+    cleanSongMeaning(withHashtags) === "Real prose.",
+    "clean-song-meaning: hashtag-only paragraph dropped"
+  );
+
+  // --- URL-only paragraph dropped ---
+  const withUrl = "Real prose.\n\nhttps://shieldbearerusa.com";
+  assert(
+    cleanSongMeaning(withUrl) === "Real prose.",
+    "clean-song-meaning: URL-only paragraph dropped"
+  );
+
+  // --- scripture-list paragraph (without emoji) dropped ---
+  const withScriptureList = "Real prose.\n\nExodus 3:7-10 · Exodus 5:1 · Exodus 6:6";
+  assert(
+    cleanSongMeaning(withScriptureList) === "Real prose.",
+    "clean-song-meaning: scripture-list line drops paragraph"
+  );
+
+  // --- single scripture reference in a prose paragraph is preserved ---
+  // Real prose paragraphs that happen to end with one scripture citation
+  // must survive: scripture-list pattern requires 2+ refs.
+  const proseWithOneRef = "There are still Pharaohs and still chains. Exodus 5:1.";
+  assert(
+    cleanSongMeaning(proseWithOneRef) === proseWithOneRef,
+    "clean-song-meaning: single scripture citation in prose preserved"
+  );
+
+  // --- full Let My People Go fixture: only prose paragraphs survive ---
+  const lmpg = [
+    "A cry that shook a nation. A command that broke chains.",
+    "",
+    "God saw the suffering. God heard the cries.",
+    "",
+    "\"Let My people go.\"",
+    "",
+    "That was not a request. That was Heaven breaking in.",
+    "",
+    "📖 Scripture Behind the Song",
+    "Exodus 3:7-10 · Exodus 5:1 · Exodus 6:6 · Exodus 12:31",
+    "Psalm 34:17 · John 8:36",
+    "",
+    "🔔 Subscribe. Or don't. We're still releasing.",
+    "🌐 https://shieldbearerusa.com",
+    "📤 Share it if it matters to you.",
+    "",
+    "#LetMyPeopleGo #Shieldbearer #ChristianMusic #Moses #Exodus #FaithMusic #HeavyWorship"
+  ].join("\n");
+  const cleaned = cleanSongMeaning(lmpg);
+  assert(
+    cleaned.includes("A cry that shook a nation."),
+    "clean-song-meaning: LMPG opening prose preserved"
+  );
+  assert(
+    cleaned.includes("Let My people go"),
+    "clean-song-meaning: LMPG quoted line preserved"
+  );
+  assert(
+    cleaned.includes("That was Heaven breaking in"),
+    "clean-song-meaning: LMPG mid prose preserved"
+  );
+  assert(
+    !cleaned.includes("📖"),
+    "clean-song-meaning: LMPG emoji-CTA paragraph dropped"
+  );
+  assert(
+    !cleaned.includes("Scripture Behind the Song"),
+    "clean-song-meaning: LMPG scripture-CTA header dropped"
+  );
+  assert(
+    !cleaned.includes("Exodus 3:7-10"),
+    "clean-song-meaning: LMPG scripture-list lines dropped"
+  );
+  assert(
+    !cleaned.includes("Psalm 34:17"),
+    "clean-song-meaning: LMPG second scripture-list line dropped"
+  );
+  assert(
+    !cleaned.includes("#LetMyPeopleGo"),
+    "clean-song-meaning: LMPG hashtag paragraph dropped"
+  );
+  assert(
+    !cleaned.includes("shieldbearerusa.com"),
+    "clean-song-meaning: LMPG URL line dropped"
+  );
+  assert(
+    !cleaned.includes("🔔"),
+    "clean-song-meaning: LMPG subscribe-CTA dropped"
+  );
+
+  // --- CRLF normalization: \r\n converts to \n before splitting ---
+  const crlf = "Para one.\r\n\r\n#hashtag";
+  assert(
+    cleanSongMeaning(crlf) === "Para one.",
+    "clean-song-meaning: CRLF line endings handled"
+  );
+
+  // --- isPromoLine spot checks ---
+  assert(isPromoLine("📖 Scripture Behind the Song"), "isPromoLine: emoji prefix");
+  assert(isPromoLine("#tag1 #tag2"), "isPromoLine: hashtag-only");
+  assert(isPromoLine("https://example.com/x"), "isPromoLine: URL-only");
+  assert(isPromoLine("Exodus 3:7-10 · Exodus 5:1"), "isPromoLine: scripture list");
+  assert(!isPromoLine("There are still Pharaohs. Exodus 5:1."), "isPromoLine: prose with one citation NOT promo");
+  assert(!isPromoLine("Real prose."), "isPromoLine: prose NOT promo");
+  assert(!isPromoLine(""), "isPromoLine: empty NOT promo");
 }

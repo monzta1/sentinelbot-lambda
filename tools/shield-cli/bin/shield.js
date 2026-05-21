@@ -261,6 +261,61 @@ function normalizeContentField(value) {
   return normalized;
 }
 
+// ============================================================
+// songMeaning sanitizer.
+//
+// Markdown songmeaning sections sometimes hold the raw YouTube
+// description -- hashtag dumps, emoji CTAs, scripture-list lines,
+// and the artist URL. Those land in DynamoDB, propagate to
+// site.json, and (post publisher-stamp) get rendered into the
+// static index.html fallback. Strip the promo noise at ingest so
+// every downstream consumer reads clean prose.
+//
+// Algorithm: split into paragraphs on blank lines. Drop any
+// paragraph that contains a promo-signal line (emoji-prefix
+// CTA, hashtag-only, URL-only, scripture-list). Keep prose
+// paragraphs intact. Real prose paragraphs that happen to cite
+// a single scripture reference at the end survive because
+// the scripture-list pattern requires 2+ refs joined by a
+// punctuation separator.
+// ============================================================
+
+const PROMO_LEADING_EMOJI_RE = /^\s*[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F004}\u{1F0CF}]/u;
+const HASHTAG_ONLY_LINE_RE = /^\s*#\S+(?:\s+#\S+)*\s*$/;
+const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i;
+// Matches lines like "Exodus 3:7-10 · Exodus 5:1" or "Psalm 34:17, John 8:36".
+// Requires 2+ Book-Chapter:Verse fragments separated by middle-dot, comma, or semicolon.
+const SCRIPTURE_LIST_LINE_RE = /^\s*(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+\d+:\d+(?:-\d+)?(?:\s*[·,;]\s*(?:[1-3]\s+)?[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+\d+:\d+(?:-\d+)?)+\s*$/;
+
+function isPromoLine(line) {
+  if (!line) return false;
+  if (PROMO_LEADING_EMOJI_RE.test(line)) return true;
+  if (HASHTAG_ONLY_LINE_RE.test(line)) return true;
+  if (URL_ONLY_LINE_RE.test(line)) return true;
+  if (SCRIPTURE_LIST_LINE_RE.test(line)) return true;
+  return false;
+}
+
+function cleanSongMeaning(raw) {
+  if (raw == null) return raw;
+  const str = String(raw);
+  if (!str.trim()) return str;
+
+  const normalized = str.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const paragraphs = normalized.split(/\n\s*\n/);
+
+  const cleaned = paragraphs.filter((paragraph) => {
+    const lines = paragraph.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return false;
+    return !lines.some(isPromoLine);
+  });
+
+  return cleaned
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 function normalizeLyricsBlock(value) {
   return String(value || "")
     .replace(/\r\n/g, "\n")
@@ -375,7 +430,7 @@ function isQualifyingSong(parsed, songPayload) {
 function buildSongContentPayload(filePath, parsed, slug) {
   const artworkFile = detectArtwork(filePath, parsed.title, slug);
   const lyrics = normalizeValue(parsed.lyrics);
-  const songMeaning = normalizeValue(parsed.songmeaning);
+  const songMeaning = cleanSongMeaning(normalizeValue(parsed.songmeaning));
   const artworkPath = artworkFile ? path.join(path.dirname(filePath), artworkFile) : null;
   const artworkUrl = artworkPath ? publishArtwork(artworkPath, slug) : null;
   // Reference is a free-form pipe-separated string ("Exodus 5:1 |
@@ -930,11 +985,18 @@ function main() {
   })();
 }
 
-main().catch(() => {
-  printJson({
-    status: "error",
-    reason: "dynamodb_write_failed",
-    songId: null
+if (require.main === module) {
+  main().catch(() => {
+    printJson({
+      status: "error",
+      reason: "dynamodb_write_failed",
+      songId: null
+    });
   });
-});
+}
 /* c8 ignore stop */
+
+module.exports = {
+  cleanSongMeaning,
+  isPromoLine
+};
