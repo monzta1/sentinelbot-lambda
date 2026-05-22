@@ -6,6 +6,7 @@
       "Effect": "Allow",
       "Action": [
         "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
         "dynamodb:Scan"
       ],
       "Resource": "arn:aws:dynamodb:us-east-1:*:table/shieldbearer_visits"

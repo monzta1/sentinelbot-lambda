@@ -42,6 +42,7 @@ const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
   PutCommand,
+  UpdateCommand,
   ScanCommand
 } = require("@aws-sdk/lib-dynamodb");
 
@@ -222,26 +223,78 @@ exports.handler = async (event) => {
     return reply(400, { error: "missing_session_or_path" });
   }
 
-  const ip = sourceIpOf(event);
-  const location = await resolveIpLocation(ip);
-  const ts_open = new Date().toISOString();
+  // v2 protocol: the client controls ts_open and tags each beacon with
+  // an event type. Back-compat with v1 (no event, no client ts_open):
+  // missing event defaults to "open" and ts_open is generated here.
+  const eventType = clip(body.event || "open", 16).toLowerCase();
+  const clientTsOpen = clip(body.ts_open, 64);
+  const tsNow = new Date().toISOString();
+  const ts_open = clientTsOpen || tsNow;
 
-  const item = {
-    session_id: sessionId,
-    ts_open,
-    path,
-    referrer: clip(body.referrer, MAX_FIELD),
-    user_agent: clip(body.user_agent || headerValue(event, "user-agent"), MAX_FIELD),
-    ip: ip || "unknown",
-    location: location || "unknown"
-  };
-
-  try {
-    await dynamo.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
-  } catch (err) {
-    console.error(JSON.stringify({ stage: "visit-write-failed", error: err && err.message, sessionId }));
-    return reply(500, { error: "write_failed" });
+  if (eventType === "open") {
+    const ip = sourceIpOf(event);
+    const location = await resolveIpLocation(ip);
+    const item = {
+      session_id: sessionId,
+      ts_open,
+      ts_last_seen: ts_open,
+      duration_ms: 0,
+      closed: false,
+      path,
+      referrer: clip(body.referrer, MAX_FIELD),
+      user_agent: clip(body.user_agent || headerValue(event, "user-agent"), MAX_FIELD),
+      ip: ip || "unknown",
+      location: location || "unknown"
+    };
+    try {
+      await dynamo.send(new PutCommand({ TableName: TABLE_NAME, Item: item }));
+    } catch (err) {
+      console.error(JSON.stringify({ stage: "visit-open-write-failed", error: err && err.message, sessionId }));
+      return reply(500, { error: "write_failed" });
+    }
+    return { statusCode: 204, headers: cors(), body: "" };
   }
 
-  return { statusCode: 204, headers: cors(), body: "" };
+  // heartbeat / close: UpdateItem on the existing row keyed by
+  // (session_id, ts_open). Compute duration_ms from the diff. Both
+  // events use the same write path; "close" just also sets
+  // closed=true so the admin UI can show clean vs abandoned sessions.
+  if (eventType === "heartbeat" || eventType === "close") {
+    const openMs = Date.parse(ts_open) || 0;
+    const nowMs = Date.parse(tsNow) || Date.now();
+    const durationMs = Math.max(0, nowMs - openMs);
+
+    const expressionNames = {
+      "#ts_last_seen": "ts_last_seen",
+      "#duration_ms": "duration_ms"
+    };
+    const expressionValues = {
+      ":ts_last_seen": tsNow,
+      ":duration_ms": durationMs
+    };
+    let setClause = "#ts_last_seen = :ts_last_seen, #duration_ms = :duration_ms";
+    if (eventType === "close") {
+      expressionNames["#closed"] = "closed";
+      expressionValues[":closed"] = true;
+      setClause += ", #closed = :closed";
+    }
+
+    try {
+      await dynamo.send(new UpdateCommand({
+        TableName: TABLE_NAME,
+        Key: { session_id: sessionId, ts_open },
+        UpdateExpression: "SET " + setClause,
+        ExpressionAttributeNames: expressionNames,
+        ExpressionAttributeValues: expressionValues
+      }));
+    } catch (err) {
+      // If the open row was never written (e.g. sendBeacon was blocked
+      // for the open event but went through for the close), the update
+      // misses. Log but do not 500; the close is best-effort.
+      console.error(JSON.stringify({ stage: "visit-update-failed", error: err && err.message, sessionId, eventType }));
+    }
+    return { statusCode: 204, headers: cors(), body: "" };
+  }
+
+  return reply(400, { error: "unknown_event_type" });
 };
