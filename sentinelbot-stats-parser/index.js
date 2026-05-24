@@ -532,7 +532,27 @@ exports.handler = async (event = {}) => {
     console.error(JSON.stringify({ stage: "vision-parse-failed", error: err && err.message }));
     return reply(502, { error: "vision_parse_failed", detail: err.message });
   }
+  console.log(JSON.stringify({
+    stage: "per-image-parse",
+    image_count: images.length,
+    per_image: perImageParses.map((p, i) => ({
+      idx: i,
+      total_streams: p && p.total_streams,
+      last_90: p && p.last_90,
+      last_30: p && p.last_30,
+      last_7: p && p.last_7,
+      country_count: (p && Array.isArray(p.per_country)) ? p.per_country.length : 0
+    }))
+  }));
   const parsed = mergeParses(perImageParses);
+  console.log(JSON.stringify({
+    stage: "merged-parse",
+    total_streams: parsed.total_streams,
+    last_90: parsed.last_90,
+    last_30: parsed.last_30,
+    last_7: parsed.last_7,
+    country_count: Array.isArray(parsed.per_country) ? parsed.per_country.length : 0
+  }));
 
   let lastPublished = null;
   try { lastPublished = await loadLatestPublished(); }
