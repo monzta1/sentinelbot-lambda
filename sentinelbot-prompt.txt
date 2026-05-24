@@ -1,2 +1,14 @@
 @source index.js
 @extract SYSTEM_PROMPT
+
+# Dynamic system blocks appended at request time by callAnthropic
+# (not part of the SYSTEM_PROMPT constant):
+#
+#   - SIGNAL ROOM
+#       built by buildSignalRoomSystemBlock from coming_soon songs
+#   - BAND VOICE AND RECENT POSTS (Phase 3, v1.10.0)
+#       built by lookupSocialContext + buildSocialContextSystemBlock
+#       from pk = "socialstream" rows; sensitivity-gated and
+#       gated by SOCIAL_CONTEXT_ENABLED env var
+#   - SONG CONTEXT
+#       built by lookup* helpers when the question maps to a song

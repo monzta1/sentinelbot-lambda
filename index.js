@@ -2213,7 +2213,13 @@ No Rulebook: shieldbearerusa.com/no-rulebook.html
 AI and Creativity: shieldbearerusa.com/ai-and-creativity.html
 God Uses Tools: shieldbearerusa.com/god-uses-tools.html
 Artist Freedom: shieldbearerusa.com/artist-freedom.html
-Contact: shieldbearerusa.com/contact.html`;
+Reach overview (both sources side by side): shieldbearerusa.com/reach
+Reach -- Streams (DistroKid stream totals, country leaderboard, growth curve): shieldbearerusa.com/reach/streams
+Reach -- YouTube (lifetime YouTube views, subscriber count, top videos): shieldbearerusa.com/reach/youtube
+Contact: shieldbearerusa.com/contact.html
+
+REACH PAGE STRUCTURE:
+The Reach section has an overview at shieldbearerusa.com/reach plus two sub-pages, one per source. When a visitor asks about streams, listens, plays, country reach, or "how many streams" point to /reach/streams. When they ask about YouTube views, subscribers, or videos point to /reach/youtube. When they want the big picture or ask "how is Shieldbearer doing" point to /reach. Never combine the two numbers; streams and views are different things measured differently and we keep them strictly separate.`;
 
 function normalizeStagingPrompt(value) {
   return String(value || "")
@@ -2275,6 +2281,252 @@ async function getSystemPromptStaging() {
     return SYSTEM_PROMPT;
   }
 }
+
+// ── Social-stream retrieval (Phase 3) ────────────────────────────
+//
+// Read-side counterpart to the socialstream partition that Phase 1
+// and Phase 2 fill. Dark-launched behind SOCIAL_CONTEXT_ENABLED so
+// the rollout is a single env-var flip. When the flag is off,
+// callAnthropic builds the same system blocks it built in v1.9.7
+// and prompt output is byte-identical.
+//
+// Retrieval pipeline:
+//   1. classify the question against the same tag vocabulary the
+//      backfill uses
+//   2. load the full socialstream into an in-memory cache (5-min
+//      TTL; band voice does not change minute to minute) on first
+//      use of a warm Lambda
+//   3. filter out do-not-answer rows in code, never in the prompt;
+//      this is the primary defense
+//   4. filter out routed rows unless the question matches the
+//      routed-allowlist of topic phrases
+//   5. score remaining rows by tag-match plus recency, return the
+//      top SOCIAL_CONTEXT_MAX_ROWS
+//
+// p95 budget is 200ms; with the cache hit the path is pure JS
+// filter+sort on at most a few thousand rows. The first warm-up
+// pays one Scan (~50-150ms for a thousand rows), then nothing.
+const SOCIAL_CONTEXT_ENABLED = String(process.env.SOCIAL_CONTEXT_ENABLED || "").toLowerCase() === "true";
+const SOCIAL_CONTEXT_MAX_ROWS = Math.max(1, Number.parseInt(process.env.SOCIAL_CONTEXT_MAX_ROWS || "5", 10) || 5);
+const SOCIAL_CONTEXT_CACHE_TTL_MS = 5 * 60 * 1000;
+const SOCIAL_CONTEXT_BODY_PREVIEW_CHARS = 400;
+const ANTHROPIC_INPUT_TOKEN_SOFT_LIMIT = Math.max(1000, Number.parseInt(process.env.ANTHROPIC_INPUT_TOKEN_SOFT_LIMIT || "12000", 10) || 12000);
+
+const SOCIAL_TAG_VOCABULARY = new Set([
+  "ai-disclosure", "theology", "live-show", "gear", "discography",
+  "press", "merch", "gatekeeping", "politics", "personal", "milestone",
+  "humor", "announcement", "collaboration", "worship", "uncategorized"
+]);
+
+// Keyword classifier for the user's question. Same vocabulary as
+// the ingest pipeline, kept independent so future drift in one
+// does not silently break the other.
+const SOCIAL_QUESTION_TAG_RULES = [
+  { tag: "ai-disclosure", pattern: /\b(ai|suno|ezdrummer|ai vocals?|ai generated|artificial intelligence)\b/i },
+  { tag: "theology", pattern: /\b(jesus|christ|gospel|scripture|john\s+\d|psalm|salvation|cross|resurrection|holy spirit|faith)\b/i },
+  { tag: "live-show", pattern: /\b(live show|concert|tour|gig|on stage|playing live|venue)\b/i },
+  { tag: "gear", pattern: /\b(guitar|ibanez|mesa boogie|mesa mark|vox ac30|fender|tonex|neural dsp|kontakt|fabfilter|amp|pedal|tuning|drums|drummer|ezdrummer)\b/i },
+  { tag: "discography", pattern: /\b(song|track|album|release|single|spotify|youtube|listen|catalog|catalogue)\b/i },
+  { tag: "press", pattern: /\b(interview|review|featured|press|magazine)\b/i },
+  { tag: "merch", pattern: /\b(t[- ]shirt|merch|shop|hoodie|sticker)\b/i },
+  { tag: "gatekeeping", pattern: /\b(gatekeep|compromise|sellout|authentic|real christian)\b/i },
+  { tag: "politics", pattern: /\b(political|government|election|policy|war|iran|israel)\b/i },
+  { tag: "personal", pattern: /\b(family|wife|son|daughter|kids|prayer)\b/i },
+  { tag: "milestone", pattern: /\b(anniversary|first show|first single|one year|five years|milestone)\b/i },
+  { tag: "humor", pattern: /\b(joke|funny|haha|lol)\b/i },
+  { tag: "announcement", pattern: /\b(announce|introducing|coming soon|just dropped|just released|new)\b/i },
+  { tag: "collaboration", pattern: /\b(feat\.|featuring|collab|collaboration)\b/i },
+  { tag: "worship", pattern: /\b(worship|praise|hymn|sunday service)\b/i }
+];
+
+// Allowlist for routed rows ("politics", "gatekeeping"). Routed
+// rows have band-voice on culturally charged topics; including
+// them when the question is unrelated would put words in the
+// band's mouth. They are returned only when the user's question
+// itself invites the band's stance.
+const SOCIAL_ROUTED_ALLOWLIST_PATTERNS = [
+  /\b(stance|position|opinion|view)\b/i,
+  /\b(take on|what do you think|where do you stand|do you think)\b/i,
+  // Prefix match so "gatekeep" also covers "gatekeeping" and
+  // "gatekeeper", which is how users naturally phrase it.
+  /\bgatekeep/i,
+  /\b(compromise|sellout|authentic|real christian|christian metal)\b/i,
+  /\b(ai in (music|church|worship)|ai cheating|ai criticism)\b/i
+];
+
+let _socialContextCache = { rows: null, expiresAt: 0 };
+let _doNotAnswerBodyCache = { bodies: null, expiresAt: 0 };
+
+function classifyQuestionTags(question) {
+  const text = String(question || "").toLowerCase();
+  const tags = new Set();
+  for (const rule of SOCIAL_QUESTION_TAG_RULES) {
+    if (rule.pattern.test(text)) tags.add(rule.tag);
+  }
+  return tags;
+}
+
+function questionMatchesRoutedAllowlist(question) {
+  const text = String(question || "");
+  return SOCIAL_ROUTED_ALLOWLIST_PATTERNS.some((p) => p.test(text));
+}
+
+async function loadSocialContextRowsFromDb({ dynamoClient = dynamo, tableName = process.env.DYNAMO_TABLE } = {}) {
+  const rows = [];
+  let lastKey = null;
+  do {
+    const response = await dynamoClient.send(new ScanCommand({
+      TableName: tableName,
+      FilterExpression: "#pk = :pk",
+      ExpressionAttributeNames: { "#pk": "pk" },
+      ExpressionAttributeValues: { ":pk": "socialstream" },
+      ExclusiveStartKey: lastKey || undefined
+    }));
+    for (const item of response?.Items || []) rows.push(item);
+    lastKey = response?.LastEvaluatedKey || null;
+  } while (lastKey);
+  return rows;
+}
+
+async function loadSocialContextRowsCached(options = {}) {
+  const now = Date.now();
+  if (_socialContextCache.rows && _socialContextCache.expiresAt > now) {
+    return _socialContextCache.rows;
+  }
+  const rows = await loadSocialContextRowsFromDb(options);
+  _socialContextCache = { rows, expiresAt: now + SOCIAL_CONTEXT_CACHE_TTL_MS };
+  return rows;
+}
+
+// Pure ranker. Drops do-not-answer rows unconditionally, drops
+// routed rows when the question is not on the allowlist, then
+// scores remaining rows by tag overlap plus recency tie-breaker.
+// Returns up to `maxRows`.
+function rankSocialRowsForQuestion({ rows, question, maxRows = SOCIAL_CONTEXT_MAX_ROWS }) {
+  const questionTags = classifyQuestionTags(question);
+  const allowRouted = questionMatchesRoutedAllowlist(question);
+
+  const candidates = [];
+  for (const row of rows) {
+    const sensitivity = row?.payload?.sensitivity || "public";
+    if (sensitivity === "do-not-answer") continue;          // hard filter, never reaches the prompt
+    if (sensitivity === "routed" && !allowRouted) continue; // allowlist gate
+    const rowTags = new Set(row?.payload?.tags || []);
+    let tagScore = 0;
+    for (const t of rowTags) {
+      if (questionTags.has(t)) tagScore += 1;
+    }
+    // Penalize the catch-all tag so rows with real signal beat
+    // uncategorized rows at equal recency.
+    if (rowTags.size === 1 && rowTags.has("uncategorized")) tagScore -= 0.5;
+
+    const recency = row?.publishedAtIso || row?.capturedAt || "";
+    candidates.push({ row, tagScore, recency });
+  }
+
+  candidates.sort((a, b) => {
+    if (b.tagScore !== a.tagScore) return b.tagScore - a.tagScore;
+    return String(b.recency).localeCompare(String(a.recency));
+  });
+
+  // Require at least one tag overlap or recent recency. If
+  // nothing scored any overlap, fall back to the most recent
+  // public rows so the bot at least sees current band voice.
+  const withOverlap = candidates.filter((c) => c.tagScore > 0);
+  const chosen = (withOverlap.length ? withOverlap : candidates).slice(0, maxRows);
+  return chosen.map((c) => c.row);
+}
+
+// Public retrieval entry. Caller passes the user's question; we
+// return at most SOCIAL_CONTEXT_MAX_ROWS rows ready to fold into
+// a system block. Sensitivity gating happens here, in code, never
+// in the prompt.
+async function lookupSocialContext(question, options = {}) {
+  if (!SOCIAL_CONTEXT_ENABLED && !options.forceEnabled) return [];
+  if (!question || typeof question !== "string") return [];
+  const rows = options.rows || await loadSocialContextRowsCached(options);
+  return rankSocialRowsForQuestion({ rows, question, maxRows: options.maxRows || SOCIAL_CONTEXT_MAX_ROWS });
+}
+
+// Format the chosen rows into a single system block. Includes the
+// LLM-generated summary when present, falls back to a body preview
+// when not. Always cites a source timestamp so the model can speak
+// of "a recent post" with grounding.
+function buildSocialContextSystemBlock(rows) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const lines = ["## Band Voice and Recent Posts", "Recent Shieldbearer social posts, ordered by relevance to the current question. Use these as voice and context; never quote verbatim unless the user asks for the exact wording.", ""];
+  for (const row of rows) {
+    const ts = row?.publishedAtIso || row?.capturedAt || "unknown";
+    const summary = String(row?.payload?.summary || "").trim();
+    const body = String(row?.payload?.message || "").trim();
+    const text = summary || body.substring(0, SOCIAL_CONTEXT_BODY_PREVIEW_CHARS);
+    const tags = Array.isArray(row?.payload?.tags) ? row.payload.tags.join(", ") : "";
+    lines.push(`- [${ts}] (tags: ${tags}) ${text}`);
+  }
+  return lines.join("\n");
+}
+
+// Token soft limit truncation. Estimates 4 chars per token (matching
+// the existing callAnthropic estimate). If the assembled system
+// blocks would push the input above the limit, the social-context
+// block is trimmed first because it is the most recently added and
+// the least authoritative of the three context sources.
+function truncateSocialBlockToFit({ socialBlock, otherSystemChars, questionChars, historyChars, softLimitTokens }) {
+  if (!socialBlock) return socialBlock;
+  const softLimitChars = softLimitTokens * 4;
+  const totalChars = otherSystemChars + String(socialBlock).length + questionChars + historyChars;
+  if (totalChars <= softLimitChars) return socialBlock;
+  const headroom = softLimitChars - otherSystemChars - questionChars - historyChars;
+  if (headroom <= 200) return null;  // not enough room to be useful at all
+  // Trim by line to keep readable structure.
+  const lines = String(socialBlock).split("\n");
+  const kept = [];
+  let used = 0;
+  for (const line of lines) {
+    const next = used + line.length + 1;
+    if (next > headroom) break;
+    kept.push(line);
+    used = next;
+  }
+  return kept.length >= 3 ? kept.join("\n") : null;
+}
+
+// Final safety net for the do-not-answer rule. The primary
+// defense is filtering those rows out of the prompt in
+// rankSocialRowsForQuestion. This guardrail runs on the model's
+// response: any 40-char verbatim overlap with a do-not-answer
+// body triggers a hard replacement. Expected to fire approximately
+// never if the primary defense is working.
+async function loadDoNotAnswerBodies(options = {}) {
+  const now = Date.now();
+  if (_doNotAnswerBodyCache.bodies && _doNotAnswerBodyCache.expiresAt > now) {
+    return _doNotAnswerBodyCache.bodies;
+  }
+  const rows = options.rows || await loadSocialContextRowsCached(options);
+  const bodies = [];
+  for (const row of rows) {
+    if (row?.payload?.sensitivity !== "do-not-answer") continue;
+    const body = String(row?.payload?.message || "").trim();
+    if (body.length >= 40) bodies.push(body);
+  }
+  _doNotAnswerBodyCache = { bodies, expiresAt: now + SOCIAL_CONTEXT_CACHE_TTL_MS };
+  return bodies;
+}
+
+function responseOverlapsDoNotAnswer(response, doNotAnswerBodies, windowSize = 40) {
+  const text = String(response || "");
+  if (text.length < windowSize) return false;
+  for (const body of doNotAnswerBodies) {
+    if (body.length < windowSize) continue;
+    for (let i = 0; i <= body.length - windowSize; i += 1) {
+      const window = body.substring(i, i + windowSize);
+      if (text.includes(window)) return true;
+    }
+  }
+  return false;
+}
+
+const SOCIAL_DO_NOT_ANSWER_FALLBACK = 'That subject is handled through official channels rather than here. Reach out via the <a href="https://shieldbearerusa.com/contact.html" target="_blank">Contact</a> page.';
 
 async function getSystemPromptProduction() {
   const now = Date.now();
@@ -3258,9 +3510,40 @@ async function callAnthropic(question, history, extraContext = null, options = {
   // matcher needing every variant.
   const upcomingSongs = await loadComingSoonSongs();
   const signalRoomBlock = buildSignalRoomSystemBlock(upcomingSongs);
+
+  // Phase 3: social-context retrieval. Dark-launched behind
+  // SOCIAL_CONTEXT_ENABLED; when the flag is off, this branch is a
+  // no-op and the prompt is byte-identical to v1.9.7's. When on,
+  // pull up to SOCIAL_CONTEXT_MAX_ROWS rows from the socialstream
+  // partition, sensitivity-gated, and assemble them into one block.
+  // Token-soft-limit truncation happens before the block is added.
+  let socialContextBlock = null;
+  let socialRows = [];
+  if (SOCIAL_CONTEXT_ENABLED) {
+    try {
+      socialRows = await lookupSocialContext(question);
+      socialContextBlock = buildSocialContextSystemBlock(socialRows);
+      const otherSystemChars =
+        String(systemPrompt || "").length
+        + String(signalRoomBlock || "").length
+        + String(extraContext || "").length;
+      socialContextBlock = truncateSocialBlockToFit({
+        socialBlock: socialContextBlock,
+        otherSystemChars,
+        questionChars: String(question || "").length,
+        historyChars: JSON.stringify(history || []).length,
+        softLimitTokens: ANTHROPIC_INPUT_TOKEN_SOFT_LIMIT
+      });
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "social-context-failed", message: error.message }));
+      socialContextBlock = null;
+    }
+  }
+
   const systemSize = String(systemPrompt || "").length
     + String(extraContext || "").length
-    + String(signalRoomBlock || "").length;
+    + String(signalRoomBlock || "").length
+    + String(socialContextBlock || "").length;
   const inputSize = String(question || "").length + systemSize + JSON.stringify(history || []).length;
   console.log(JSON.stringify({
     event: "anthropic-call-start",
@@ -3271,7 +3554,9 @@ async function callAnthropic(question, history, extraContext = null, options = {
     model,
     inputSize,
     estimatedInputTokens: Math.ceil(inputSize / 4),
-    signalRoomBlockChars: String(signalRoomBlock || "").length
+    signalRoomBlockChars: String(signalRoomBlock || "").length,
+    socialContextChars: String(socialContextBlock || "").length,
+    socialContextRows: socialRows.length
   }));
 
   const systemBlocks = [
@@ -3287,6 +3572,12 @@ async function callAnthropic(question, history, extraContext = null, options = {
     systemBlocks.push({
       type: "text",
       text: signalRoomBlock
+    });
+  }
+  if (socialContextBlock) {
+    systemBlocks.push({
+      type: "text",
+      text: socialContextBlock
     });
   }
   if (extraContext) {
@@ -3320,7 +3611,25 @@ async function callAnthropic(question, history, extraContext = null, options = {
     throw new Error(`Anthropic error ${res.status}: ${JSON.stringify(data)}`);
   }
 
-  const output = data?.content?.[0]?.text || "Signal lost. Try again.";
+  let output = data?.content?.[0]?.text || "Signal lost. Try again.";
+
+  // Final safety net: if the model produced text that overlaps
+  // verbatim with any do-not-answer post body, hard-replace with
+  // the canonical Official Statement reference. The primary
+  // defense already drops those rows in rankSocialRowsForQuestion;
+  // this is paranoid defense in depth.
+  if (SOCIAL_CONTEXT_ENABLED) {
+    try {
+      const doNotAnswerBodies = await loadDoNotAnswerBodies();
+      if (doNotAnswerBodies.length && responseOverlapsDoNotAnswer(output, doNotAnswerBodies)) {
+        console.warn(JSON.stringify({ event: "social-do-not-answer-guardrail-triggered" }));
+        output = SOCIAL_DO_NOT_ANSWER_FALLBACK;
+      }
+    } catch (error) {
+      console.warn(JSON.stringify({ event: "social-do-not-answer-check-failed", message: error.message }));
+    }
+  }
+
   const outputSize = String(output).length;
   const estimatedInputTokens = Math.ceil(inputSize / 4);
   const estimatedOutputTokens = Math.ceil(outputSize / 4);
@@ -3681,5 +3990,13 @@ module.exports = {
   isResolvableIp,
   formatLocation,
   resolveIpLocation,
-  buildLogItem
+  buildLogItem,
+  // Phase 3 retrieval surface
+  classifyQuestionTags,
+  questionMatchesRoutedAllowlist,
+  rankSocialRowsForQuestion,
+  buildSocialContextSystemBlock,
+  truncateSocialBlockToFit,
+  responseOverlapsDoNotAnswer,
+  lookupSocialContext
 };
