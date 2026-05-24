@@ -235,6 +235,110 @@ async function fetchWatchSummary(accessToken, startDate, endDate) {
   };
 }
 
+// Daily views time series. Returns an array of { date, views, minutes }
+// covering a trailing window of `days` days. Used by the public growth
+// curve so the chart shows real YouTube data instead of inference.
+async function fetchDailyViews(accessToken, days = 90, refDate = new Date()) {
+  const start = daysAgo(days, refDate);
+  const end = refDate.toISOString().slice(0, 10);
+  const report = await runAnalyticsReport(accessToken, {
+    startDate: start,
+    endDate: end,
+    metrics: "views,estimatedMinutesWatched",
+    dimensions: "day",
+    sort: "day"
+  });
+  const rows = report?.rows || [];
+  return rows.map((row) => ({
+    date: String(row[0] || ""),
+    views: Number(row[1]) || 0,
+    minutes: Number(row[2]) || 0
+  }));
+}
+
+// Top videos by views over the trailing window. Pairs the Analytics
+// videoId list with title/thumbnail from the Data API videos.list
+// endpoint so the rendered list has the same shape as top_videos.
+async function fetchTopVideosForWindow(accessToken, startDate, endDate, limit = 5) {
+  const report = await runAnalyticsReport(accessToken, {
+    startDate, endDate,
+    metrics: "views",
+    dimensions: "video",
+    sort: "-views",
+    maxResults: String(limit)
+  });
+  const rows = report?.rows || [];
+  if (!rows.length) return [];
+  const ids = rows.map((r) => String(r[0] || "")).filter(Boolean);
+  const viewsByVideoId = new Map(rows.map((r) => [String(r[0]), Number(r[1]) || 0]));
+
+  const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+  url.searchParams.set("part", "snippet");
+  url.searchParams.set("id", ids.join(","));
+  url.searchParams.set("key", YOUTUBE_API_KEY);
+  const data = await dataApiFetch(url.toString());
+  const enriched = (data?.items || []).map((item) => ({
+    videoId: item.id,
+    title: item?.snippet?.title || "Untitled",
+    thumbnail: item?.snippet?.thumbnails?.medium?.url || item?.snippet?.thumbnails?.default?.url || null,
+    publishedAt: item?.snippet?.publishedAt || null,
+    url: `https://www.youtube.com/watch?v=${item.id}`,
+    views: viewsByVideoId.get(item.id) || 0
+  }));
+  // Preserve the Analytics sort order (which is by views in the window),
+  // not the order the Data API echoes the IDs back in.
+  enriched.sort((a, b) => b.views - a.views);
+  return enriched;
+}
+
+// Traffic source breakdown. The Analytics API returns machine codes
+// like YT_SEARCH; we map them to human-readable labels here so the
+// frontend doesn't have to know about the YouTube enum.
+const TRAFFIC_SOURCE_LABELS = {
+  YT_SEARCH: "YouTube search",
+  SUGGESTED_VIDEO: "Suggested next",
+  EXTERNAL: "Outside YouTube",
+  YT_CHANNEL: "Channel page",
+  BROWSE: "Home feed",
+  PLAYLIST: "From a playlist",
+  NOTIFICATION: "Notifications",
+  SUBSCRIBER: "From subscriptions",
+  ADVERTISING: "Ads",
+  CAMPAIGN_CARD: "Promotion",
+  END_SCREEN: "End screen",
+  ANNOTATION: "Annotation",
+  HASHTAGS: "Hashtag pages",
+  EXT_URL: "External URL",
+  EXT_APP: "External app",
+  SHORTS: "Shorts feed",
+  PLAYLIST_PAGE: "Playlist page",
+  LIVE: "Live",
+  YT_OTHER_PAGE: "Other YouTube page",
+  RELATED_VIDEO: "Related video",
+  DIRECT_OR_UNKNOWN: "Direct or unknown",
+  NO_LINK_OTHER: "No referrer",
+  NO_LINK_EMBEDDED: "Embedded player"
+};
+function labelForTrafficSource(code) {
+  const k = String(code || "").toUpperCase();
+  return TRAFFIC_SOURCE_LABELS[k] || k.replace(/_/g, " ").toLowerCase();
+}
+
+async function fetchTrafficSources(accessToken, startDate, endDate) {
+  const report = await runAnalyticsReport(accessToken, {
+    startDate, endDate,
+    metrics: "views",
+    dimensions: "insightTrafficSourceType",
+    sort: "-views"
+  });
+  const rows = report?.rows || [];
+  return rows.map((row) => ({
+    source: String(row[0] || ""),
+    label: labelForTrafficSource(row[0]),
+    views: Number(row[1]) || 0
+  }));
+}
+
 async function fetchCountryBreakdown(accessToken, startDate, endDate, limit = 15) {
   const report = await runAnalyticsReport(accessToken, {
     startDate, endDate,
@@ -340,7 +444,7 @@ async function fetchTopVideos(uploadsPlaylistId, limit) {
 // Artifact builder.
 // ============================================================
 
-function buildYouTubeArtifact({ channel, windows, watch, top48, top30, topVideos }) {
+function buildYouTubeArtifact({ channel, windows, watch, top48, top30, topVideos, topVideos30d, dailyViews, trafficSources }) {
   return {
     generated_at: nowIso(),
     source: "YouTube",
@@ -363,7 +467,10 @@ function buildYouTubeArtifact({ channel, windows, watch, top48, top30, topVideos
     },
     last_48h_countries: top48,
     last_30d_countries: top30,
-    top_videos: topVideos
+    top_videos: topVideos,
+    top_videos_30d: topVideos30d || [],
+    daily_views: dailyViews || [],
+    traffic_sources_30d: trafficSources || []
   };
 }
 
@@ -473,15 +580,18 @@ exports.handler = async (event = {}) => {
     const secret = await loadOAuthSecret();
     const accessToken = await fetchAccessToken(secret);
 
-    const [channel, watch7, watch30, countries48, countries30] = await Promise.all([
+    const [channel, watch7, watch30, countries48, countries30, dailyViews, trafficSources, topVideos30d] = await Promise.all([
       fetchChannelStats(),
       fetchWatchSummary(accessToken, windows.last7.start, windows.last7.end),
       fetchWatchSummary(accessToken, windows.last30.start, windows.last30.end),
       fetchCountryBreakdown(accessToken, windows.last48h.start, windows.last48h.end, 15),
-      fetchCountryBreakdown(accessToken, windows.last30.start, windows.last30.end, 15)
+      fetchCountryBreakdown(accessToken, windows.last30.start, windows.last30.end, 15),
+      fetchDailyViews(accessToken, 90),
+      fetchTrafficSources(accessToken, windows.last30.start, windows.last30.end),
+      fetchTopVideosForWindow(accessToken, windows.last30.start, windows.last30.end, 5)
     ]);
 
-    // Top videos fetch reuses the channel result's uploadsPlaylistId,
+    // Lifetime top videos fetch reuses the channel result's uploadsPlaylistId,
     // so it must run after that resolves.
     const topVideos = await fetchTopVideos(channel.uploadsPlaylistId, TOP_VIDEO_LIMIT);
 
@@ -491,7 +601,10 @@ exports.handler = async (event = {}) => {
       watch: { last7: watch7, last30: watch30 },
       top48: countries48,
       top30: countries30,
-      topVideos
+      topVideos,
+      topVideos30d,
+      dailyViews,
+      trafficSources
     });
 
     if (DRY_RUN) {
@@ -513,6 +626,9 @@ exports.handler = async (event = {}) => {
       last48hCountries: countries48.length,
       last30dCountries: countries30.length,
       topVideos: topVideos.length,
+      topVideos30d: topVideos30d.length,
+      dailyViewsPoints: dailyViews.length,
+      trafficSources: trafficSources.length,
       commitSha: writeResult.commitSha,
       elapsedMs: Date.now() - startedAt
     });
@@ -537,5 +653,7 @@ module.exports = {
   buildCanonicalArtifact,
   firstRowMetric,
   hashContent,
+  labelForTrafficSource,
+  TRAFFIC_SOURCE_LABELS,
   COUNTRY_LOOKUP
 };

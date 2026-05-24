@@ -122,6 +122,71 @@ function assertEqual(actual, expected, label) {
   assert(a.length === 64, "hash: sha256 hex length");
 }
 
+// --- labelForTrafficSource: known codes get friendly labels ---
+{
+  assertEqual(pub.labelForTrafficSource("YT_SEARCH"), "YouTube search", "trafficLabel: YT_SEARCH");
+  assertEqual(pub.labelForTrafficSource("SUGGESTED_VIDEO"), "Suggested next", "trafficLabel: SUGGESTED_VIDEO");
+  assertEqual(pub.labelForTrafficSource("EXTERNAL"), "Outside YouTube", "trafficLabel: EXTERNAL");
+  assertEqual(pub.labelForTrafficSource("YT_CHANNEL"), "Channel page", "trafficLabel: YT_CHANNEL");
+  assertEqual(pub.labelForTrafficSource("BROWSE"), "Home feed", "trafficLabel: BROWSE");
+  assertEqual(pub.labelForTrafficSource("DIRECT_OR_UNKNOWN"), "Direct or unknown", "trafficLabel: DIRECT_OR_UNKNOWN");
+  // Unknown code falls back to lowercased / underscore-stripped
+  assertEqual(pub.labelForTrafficSource("SOME_NEW_TYPE"), "some new type", "trafficLabel: unknown -> fallback");
+  // Lowercase input still hits the upper-case table
+  assertEqual(pub.labelForTrafficSource("yt_search"), "YouTube search", "trafficLabel: lowercase input normalized");
+  // Empty / nullish
+  assertEqual(pub.labelForTrafficSource(""), "", "trafficLabel: empty -> empty");
+  assertEqual(pub.labelForTrafficSource(null), "", "trafficLabel: null -> empty");
+}
+
+// --- TRAFFIC_SOURCE_LABELS table sanity ---
+{
+  assert(typeof pub.TRAFFIC_SOURCE_LABELS === "object", "TRAFFIC_SOURCE_LABELS exported as object");
+  assert(Object.keys(pub.TRAFFIC_SOURCE_LABELS).length >= 10, "TRAFFIC_SOURCE_LABELS has at least 10 codes");
+}
+
+// --- buildYouTubeArtifact: new fields land at expected paths ---
+{
+  const artifact = pub.buildYouTubeArtifact({
+    channel: {
+      channelId: "X", title: "T", handle: "@t", channelUrl: "u",
+      publishedAt: "p", thumbnail: null, viewsLifetime: 1, subscribers: 1,
+      subscribersHidden: false, videoCount: 1
+    },
+    windows: {
+      last_48h: { start: "a", end: "b" },
+      last_7: { start: "c", end: "d" },
+      last_30: { start: "e", end: "f" }
+    },
+    watch: { last7: {}, last30: {} },
+    top48: [],
+    top30: [],
+    topVideos: [],
+    topVideos30d: [{ videoId: "v1", title: "Surge top", views: 100, url: "u1" }],
+    dailyViews: [{ date: "2026-05-20", views: 10, minutes: 30 }],
+    trafficSources: [{ source: "YT_SEARCH", label: "YouTube search", views: 50 }]
+  });
+  assertEqual(artifact.top_videos_30d.length, 1, "artifact: top_videos_30d carried");
+  assertEqual(artifact.top_videos_30d[0].videoId, "v1", "artifact: top_videos_30d shape");
+  assertEqual(artifact.daily_views.length, 1, "artifact: daily_views carried");
+  assertEqual(artifact.daily_views[0].views, 10, "artifact: daily_views shape");
+  assertEqual(artifact.traffic_sources_30d.length, 1, "artifact: traffic_sources_30d carried");
+  assertEqual(artifact.traffic_sources_30d[0].label, "YouTube search", "artifact: traffic_sources_30d label");
+}
+
+// --- buildYouTubeArtifact: missing optional fields default to [] ---
+{
+  const artifact = pub.buildYouTubeArtifact({
+    channel: { channelId: "X", title: "T", handle: "@t", channelUrl: "u", publishedAt: "p", thumbnail: null, viewsLifetime: 1, subscribers: 1, subscribersHidden: false, videoCount: 1 },
+    windows: { last_48h: {}, last_7: {}, last_30: {} },
+    watch: { last7: {}, last30: {} },
+    top48: [], top30: [], topVideos: []
+  });
+  assertEqual(artifact.top_videos_30d, [], "artifact: missing top_videos_30d defaults to []");
+  assertEqual(artifact.daily_views, [], "artifact: missing daily_views defaults to []");
+  assertEqual(artifact.traffic_sources_30d, [], "artifact: missing traffic_sources_30d defaults to []");
+}
+
 console.log("\n=========================================");
 console.log(`YouTube-stats-publisher tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
