@@ -4,7 +4,10 @@
     "backfill:songs-table": "node scripts/backfill-songs-table.js",
     "sync:songs-table": "SONGS_BACKFILL_SOURCE=eventstream SONGS_REPLACE_EXISTING=true node scripts/backfill-songs-table.js",
     "verify:songs-table": "node scripts/verify-songs-table.js",
-    "test:run": "node tools/shield-cli/tests/run-tests.js && node sentinelbot-site-publisher/tests/run-tests.js && node sentinelbot-release-detector-youtube/tests/run-tests.js && node tests/run-tests.js",
+    "backfill:social-stream": "node scripts/backfill-social-stream.js",
+    "verify:social-stream": "node scripts/verify-social-stream.js",
+    "snapshot:social-stream": "node scripts/snapshot-social-stream.js",
+    "test:run": "node tools/shield-cli/tests/run-tests.js && node tools/shield-cli/tests/run-social-stream-tests.js && node tools/shield-cli/tests/run-social-ingest-tests.js && node tools/shield-cli/tests/run-social-context-tests.js && node sentinelbot-site-publisher/tests/run-tests.js && node sentinelbot-release-detector-youtube/tests/run-tests.js && node sentinelbot-stats-parser/tests/run-tests.js && node sentinelbot-youtube-stats-publisher/tests/run-tests.js && node tests/run-tests.js",
     "test": "c8 npm run test:run"
   },
   "dependencies": {
