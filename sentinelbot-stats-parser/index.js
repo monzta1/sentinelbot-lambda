@@ -52,6 +52,7 @@ const GITHUB_OWNER = process.env.GITHUB_OWNER || "monzta1";
 const GITHUB_REPO = process.env.GITHUB_REPO || "shieldbearer-website";
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "sentinelbot-stable";
 const REACH_JSON_PATH = "reach.json";
+const SPOTIFY_JSON_PATH = "spotify_songs.json";
 
 // Anthropic vision model. Sonnet 4.6 is current per CLAUDE.md
 // memory; vision-capable; same key as SentinelBot handler.
@@ -172,32 +173,56 @@ function canonicalizeCountry(name) {
 
 // =====================================================
 // Vision call. Tight prompt, strict-JSON contract.
+//
+// Three screen types are recognized. The model returns a tagged
+// envelope { type, data } so the handler can route each image to
+// the correct downstream pipeline.
+//
+//   distrokid_totals    -> Last 365/90/30/7 day totals
+//   distrokid_countries -> Streams by Country list
+//   spotify_songs       -> Spotify for Artists per-song list
+//
+// DistroKid and Spotify numbers are NEVER combined downstream.
+// They live in separate stores and feed separate JSON artifacts.
 // =====================================================
 async function parseScreenshot(imageBase64, mimeType) {
   if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   const prompt = [
-    "You are reading a DistroKid stats screenshot from a phone.",
-    "Return ONLY valid JSON in the shape below. No prose, no markdown fences, no commentary.",
+    "You are reading a music analytics screenshot. Identify which of three screen types this is, then extract its data.",
     "",
-    "Two screen types exist. Whichever you see, extract what is visible. Omit fields you cannot see; do not invent.",
+    "Return ONLY valid JSON in the envelope below. No prose, no markdown fences, no commentary.",
     "",
-    "Screen A (totals): has a Spotify header and rows like 'Last 365 days' / 'Last 90 days' / 'Last 30 days' / 'Last 7 days' each followed by a number formatted like '9,724 streams'.",
-    "Screen B (countries): has a 'Streams by Country' list. Each row is a flag + country name + a number. Examples: 'United States 3,164', 'The Netherlands 218', 'United Arab Emirates 17'.",
+    "Type A: \"distrokid_totals\"",
+    "  DistroKid stats summary. Rows like 'Last 365 days', 'Last 90 days', 'Last 30 days', 'Last 7 days', each followed by a number like '9,724 streams'.",
+    "",
+    "Type B: \"distrokid_countries\"",
+    "  DistroKid 'Streams by Country' list. Each row is a flag + country name + a number. Examples: 'United States 3,164', 'The Netherlands 218'.",
+    "",
+    "Type C: \"spotify_songs\"",
+    "  Spotify for Artists 'Songs' view. Tabs may read 'Songs / Releases / Playlists / Upcoming'. A subheader may read 'Streams · All-time'. Each row is a small square cover art, the song title on the left, and an all-time stream count on the right. Examples: 'Silent As Night 4,270', 'Quake 897'.",
     "",
     "Rules:",
-    "- Strip ALL commas from numbers. '9,724' becomes 9724.",
+    "- Strip ALL commas from numbers. '4,270' becomes 4270.",
     "- Numbers are integers. No decimals.",
-    "- Use the country name exactly as displayed (e.g. 'United Kingdom', 'The Netherlands').",
-    "- If the screenshot is cropped, return only what is visible.",
+    "- Use names exactly as displayed.",
+    "- If the screenshot is cropped, omit rows you cannot read clearly.",
     "- Do NOT guess at numbers you cannot read.",
+    "- If the screen does not match any of the three types, return type 'unknown'.",
     "",
-    "Output exactly this JSON shape (omit fields not visible):",
+    "Output exactly this JSON envelope (include only the data fields that apply to the detected type):",
     "{",
-    '  "total_streams": <integer, from "Last 365 days" line>,',
-    '  "last_90": <integer>,',
-    '  "last_30": <integer>,',
-    '  "last_7": <integer>,',
-    '  "per_country": [ {"country": "<name>", "streams": <integer>}, ... ]',
+    '  "type": "distrokid_totals" | "distrokid_countries" | "spotify_songs" | "unknown",',
+    '  "data": {',
+    "    // For distrokid_totals:",
+    '    "total_streams": <integer, from "Last 365 days">,',
+    '    "last_90": <integer>,',
+    '    "last_30": <integer>,',
+    '    "last_7": <integer>,',
+    "    // For distrokid_countries:",
+    '    "per_country": [ {"country": "<name>", "streams": <integer>}, ... ],',
+    "    // For spotify_songs:",
+    '    "songs": [ {"title": "<song title>", "streams": <integer>}, ... ]',
+    "  }",
     "}"
   ].join("\n");
 
@@ -233,7 +258,6 @@ async function parseScreenshot(imageBase64, mimeType) {
   }
   const data = await resp.json();
   const text = (data && data.content && data.content[0] && data.content[0].text) || "";
-  // Be defensive: strip code fences if the model added them despite the prompt.
   const cleaned = text.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```\s*$/, "");
   let parsed;
   try {
@@ -241,7 +265,7 @@ async function parseScreenshot(imageBase64, mimeType) {
   } catch (e) {
     throw new Error("Model output was not valid JSON. First 200 chars: " + cleaned.slice(0, 200));
   }
-  return normalizeParsed(parsed);
+  return normalizeEnvelope(parsed);
 }
 
 function intOrNull(v) {
@@ -250,7 +274,35 @@ function intOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-function normalizeParsed(p) {
+// Accept either the new tagged envelope { type, data } or the old
+// flat shape (for legacy callers and resilience if the model forgets
+// to wrap). Infers type from fields if absent.
+function normalizeEnvelope(raw) {
+  if (!raw || typeof raw !== "object") return { type: "unknown", data: {} };
+  // Tagged envelope?
+  if (typeof raw.type === "string" && raw.data && typeof raw.data === "object") {
+    return normalizeByType(raw.type, raw.data);
+  }
+  // Flat shape -- infer type from which fields are present.
+  if (Array.isArray(raw.songs)) return normalizeByType("spotify_songs", raw);
+  if (Array.isArray(raw.per_country)) return normalizeByType("distrokid_countries", raw);
+  if (raw.total_streams != null || raw.last_90 != null || raw.last_30 != null || raw.last_7 != null) {
+    return normalizeByType("distrokid_totals", raw);
+  }
+  return { type: "unknown", data: {} };
+}
+
+function normalizeByType(type, data) {
+  if (type === "distrokid_totals" || type === "distrokid_countries") {
+    return { type, data: normalizeReachData(data) };
+  }
+  if (type === "spotify_songs") {
+    return { type, data: normalizeSpotifyData(data) };
+  }
+  return { type: "unknown", data: {} };
+}
+
+function normalizeReachData(p) {
   const out = {};
   if (p.total_streams != null) out.total_streams = intOrNull(p.total_streams);
   if (p.last_90 != null) out.last_90 = intOrNull(p.last_90);
@@ -267,6 +319,26 @@ function normalizeParsed(p) {
       .filter(Boolean);
   }
   return out;
+}
+
+function normalizeSpotifyData(p) {
+  const out = { songs: [] };
+  if (!Array.isArray(p.songs)) return out;
+  out.songs = p.songs
+    .map((row) => {
+      const title = String((row && row.title) || "").trim();
+      const streams = intOrNull(row && row.streams);
+      if (!title || streams == null || streams <= 0) return null;
+      return { title, streams };
+    })
+    .filter(Boolean);
+  return out;
+}
+
+// Back-compat shim for the old export name. Returns the data shape
+// that the original (pre-three-type) handler expected. Tests use it.
+function normalizeParsed(p) {
+  return normalizeReachData(p || {});
 }
 
 // =====================================================
@@ -314,7 +386,62 @@ function mergeParses(parses) {
 }
 
 // =====================================================
-// Sanity check.
+// Spotify per-song merge. Multiple Spotify screens in one upload
+// are unusual but possible (operator scrolls the song list).
+// Combine by song title, taking the MAX stream count -- Spotify
+// counters only increment.
+// =====================================================
+function mergeSpotifyParses(parses) {
+  const list = Array.isArray(parses) ? parses.filter(Boolean) : [];
+  if (!list.length) return null;
+  const byTitle = new Map();
+  for (const p of list) {
+    if (!p || !Array.isArray(p.songs)) continue;
+    for (const s of p.songs) {
+      const title = String((s && s.title) || "").trim();
+      const v = Number(s && s.streams) || 0;
+      if (!title || v <= 0) continue;
+      const cur = byTitle.get(title);
+      if (cur == null || v > cur) byTitle.set(title, v);
+    }
+  }
+  if (!byTitle.size) return null;
+  const songs = Array.from(byTitle.entries())
+    .map(([title, streams]) => ({ title, streams }))
+    .sort((a, b) => b.streams - a.streams);
+  return { songs };
+}
+
+// =====================================================
+// Spotify sanity check. Each known song's new count must be at
+// least its last published count. New songs (first appearance)
+// are always accepted. If any known song decreased, the whole
+// upload is rejected and the last good record stays live.
+// =====================================================
+function sanityCheckSpotify(parsed, lastPublished) {
+  if (!lastPublished) return { ok: true };
+  if (!parsed || !Array.isArray(parsed.songs) || !parsed.songs.length) {
+    return { ok: false, reason: "empty_parse", detail: "no songs in parse" };
+  }
+  const lastByTitle = new Map();
+  for (const s of (lastPublished.songs || [])) {
+    lastByTitle.set(s.title, Number(s.streams) || 0);
+  }
+  for (const s of parsed.songs) {
+    const prev = lastByTitle.get(s.title);
+    if (prev != null && Number(s.streams) < prev) {
+      return {
+        ok: false,
+        reason: "song_dropped",
+        detail: `${s.title} parsed ${s.streams} < last ${prev}`
+      };
+    }
+  }
+  return { ok: true };
+}
+
+// =====================================================
+// Sanity check (DistroKid reach total).
 // =====================================================
 function sanityCheck(parsed, lastPublished) {
   // No prior record: anything goes (first upload).
@@ -336,14 +463,17 @@ function sanityCheck(parsed, lastPublished) {
 // =====================================================
 // DynamoDB helpers.
 // =====================================================
+// Filter so reach loaders exclude Spotify records. Legacy reach
+// records (written before record_kind existed) have no kind field
+// and are still picked up.
+const REACH_FILTER = "published = :p AND (attribute_not_exists(record_kind) OR record_kind = :k)";
+const REACH_VALUES = { ":p": true, ":k": "reach" };
+
 async function loadLatestPublished() {
-  // Single-table, single-PK scan. Volume is tiny (one record per
-  // operator upload, kept forever). Filter to published=true and
-  // pick newest by parsed_at.
   const result = await dynamo.send(new ScanCommand({
     TableName: TABLE_NAME,
-    FilterExpression: "published = :p",
-    ExpressionAttributeValues: { ":p": true }
+    FilterExpression: REACH_FILTER,
+    ExpressionAttributeValues: REACH_VALUES
   }));
   const items = (result && result.Items) || [];
   if (!items.length) return null;
@@ -354,13 +484,25 @@ async function loadLatestPublished() {
 async function loadHistory(limit) {
   const result = await dynamo.send(new ScanCommand({
     TableName: TABLE_NAME,
-    FilterExpression: "published = :p",
-    ExpressionAttributeValues: { ":p": true }
+    FilterExpression: REACH_FILTER,
+    ExpressionAttributeValues: REACH_VALUES
   }));
   const items = (result && result.Items) || [];
   items.sort((a, b) => String(a.parsed_at || "").localeCompare(String(b.parsed_at || "")));
   if (limit && items.length > limit) return items.slice(items.length - limit);
   return items;
+}
+
+async function loadLatestSpotifyPublished() {
+  const result = await dynamo.send(new ScanCommand({
+    TableName: TABLE_NAME,
+    FilterExpression: "published = :p AND record_kind = :k",
+    ExpressionAttributeValues: { ":p": true, ":k": "spotify_songs" }
+  }));
+  const items = (result && result.Items) || [];
+  if (!items.length) return null;
+  items.sort((a, b) => String(b.parsed_at || "").localeCompare(String(a.parsed_at || "")));
+  return items[0];
 }
 
 async function writeRecord(record) {
@@ -421,6 +563,40 @@ async function commitReachJson(artifact) {
   return d && d.commit && d.commit.sha;
 }
 
+async function readSpotifySongsJsonSha() {
+  const url = `${buildGitHubContentsUrl(SPOTIFY_JSON_PATH)}?ref=${encodeURIComponent(GITHUB_BRANCH)}`;
+  const r = await fetch(url, { method: "GET", headers: ghHeaders() });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("GH read failed " + r.status);
+  const d = await r.json();
+  return (d && d.sha) || null;
+}
+async function commitSpotifySongsJson(artifact) {
+  if (!GITHUB_TOKEN) {
+    console.warn("GITHUB_TOKEN not set, skipping spotify_songs.json commit");
+    return null;
+  }
+  const content = JSON.stringify(artifact, null, 2) + "\n";
+  const sha = await readSpotifySongsJsonSha();
+  const body = {
+    message: `auto: spotify songs refresh (${(artifact.songs || []).length} tracks)`,
+    content: Buffer.from(content, "utf8").toString("base64"),
+    branch: GITHUB_BRANCH
+  };
+  if (sha) body.sha = sha;
+  const r = await fetch(buildGitHubContentsUrl(SPOTIFY_JSON_PATH), {
+    method: "PUT",
+    headers: ghHeaders(),
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error("GH PUT failed " + r.status + ": " + t.slice(0, 200));
+  }
+  const d = await r.json();
+  return d && d.commit && d.commit.sha;
+}
+
 // =====================================================
 // Public artifact shape (what gets committed as reach.json).
 // =====================================================
@@ -443,6 +619,26 @@ function buildReachArtifact(latest, history) {
     nations: sortedCountries.length,
     countries: sortedCountries,
     history: series,
+    last_published_at: (latest && latest.parsed_at) || null
+  };
+}
+
+// =====================================================
+// Spotify artifact shape (committed to /spotify_songs.json).
+// =====================================================
+function buildSpotifyArtifact(latest) {
+  const ts = new Date().toISOString();
+  const songs = (latest && Array.isArray(latest.songs)) ? latest.songs : [];
+  const sortedSongs = songs
+    .slice()
+    .sort((a, b) => (Number(b.streams) || 0) - (Number(a.streams) || 0));
+  const totalSpotifyStreams = sortedSongs.reduce((sum, s) => sum + (Number(s.streams) || 0), 0);
+  return {
+    generated_at: ts,
+    source: "Spotify for Artists",
+    songs: sortedSongs,
+    track_count: sortedSongs.length,
+    total_spotify_streams: totalSpotifyStreams,
     last_published_at: (latest && latest.parsed_at) || null
   };
 }
@@ -525,9 +721,9 @@ exports.handler = async (event = {}) => {
   if (!images.length) return reply(400, { error: "missing_image_base64" });
   if (images.length > 4) return reply(400, { error: "too_many_images", detail: "max 4 per upload" });
 
-  let perImageParses;
+  let envelopes;
   try {
-    perImageParses = await Promise.all(images.map((img) => parseScreenshot(img.image_base64, img.mime_type)));
+    envelopes = await Promise.all(images.map((img) => parseScreenshot(img.image_base64, img.mime_type)));
   } catch (err) {
     console.error(JSON.stringify({ stage: "vision-parse-failed", error: err && err.message }));
     return reply(502, { error: "vision_parse_failed", detail: err.message });
@@ -535,103 +731,185 @@ exports.handler = async (event = {}) => {
   console.log(JSON.stringify({
     stage: "per-image-parse",
     image_count: images.length,
-    per_image: perImageParses.map((p, i) => ({
+    per_image: envelopes.map((p, i) => ({
       idx: i,
-      total_streams: p && p.total_streams,
-      last_90: p && p.last_90,
-      last_30: p && p.last_30,
-      last_7: p && p.last_7,
-      country_count: (p && Array.isArray(p.per_country)) ? p.per_country.length : 0
+      type: p && p.type,
+      total_streams: p && p.data && p.data.total_streams,
+      country_count: (p && p.data && Array.isArray(p.data.per_country)) ? p.data.per_country.length : 0,
+      song_count: (p && p.data && Array.isArray(p.data.songs)) ? p.data.songs.length : 0
     }))
   }));
-  const parsed = mergeParses(perImageParses);
-  console.log(JSON.stringify({
-    stage: "merged-parse",
-    total_streams: parsed.total_streams,
-    last_90: parsed.last_90,
-    last_30: parsed.last_30,
-    last_7: parsed.last_7,
-    country_count: Array.isArray(parsed.per_country) ? parsed.per_country.length : 0
-  }));
 
-  let lastPublished = null;
-  try { lastPublished = await loadLatestPublished(); }
-  catch (err) {
-    console.error(JSON.stringify({ stage: "load-latest-failed", error: err && err.message }));
-    return reply(500, { error: "dynamo_read_failed" });
-  }
-
-  const sane = sanityCheck(parsed, lastPublished);
   const ts = new Date().toISOString();
 
-  if (!sane.ok) {
-    // Write the rejected record with published=false and a review flag.
-    const rejected = {
-      record_id: newRecordId(),
-      parsed_at: ts,
-      total_streams: parsed.total_streams || 0,
-      last_90: parsed.last_90 || 0,
-      last_30: parsed.last_30 || 0,
-      last_7: parsed.last_7 || 0,
-      per_country: parsed.per_country || [],
-      published: false,
-      review_flag: sane.reason,
-      review_detail: sane.detail,
-      last_published_total: (lastPublished && lastPublished.total_streams) || 0
-    };
-    try { await writeRecord(rejected); }
-    catch (err) {
-      console.error(JSON.stringify({ stage: "write-rejected-failed", error: err && err.message }));
-    }
-    return reply(200, {
-      ok: true,
-      published: false,
-      review_flag: sane.reason,
-      review_detail: sane.detail,
-      parsed,
-      per_image: perImageParses,
-      image_count: images.length,
-      last_published: lastPublished
-    });
-  }
+  // Bucket parses by detected type. DistroKid totals + countries
+  // feed the reach pipeline together; Spotify songs are entirely
+  // independent. Sources never blend.
+  const reachParses = envelopes
+    .filter((e) => e && (e.type === "distrokid_totals" || e.type === "distrokid_countries"))
+    .map((e) => e.data);
+  const spotifyParses = envelopes
+    .filter((e) => e && e.type === "spotify_songs")
+    .map((e) => e.data);
+  const unknownCount = envelopes.filter((e) => !e || e.type === "unknown").length;
 
-  // Sane: merge with last, write published record, commit reach.json.
-  const merged = {
-    record_id: newRecordId(),
-    parsed_at: ts,
-    total_streams: preservedTotal(parsed, lastPublished),
-    last_90: preservedField(parsed, lastPublished, "last_90"),
-    last_30: preservedField(parsed, lastPublished, "last_30"),
-    last_7: preservedField(parsed, lastPublished, "last_7"),
-    per_country: mergePerCountry(parsed, lastPublished),
-    published: true
-  };
-  try { await writeRecord(merged); }
-  catch (err) {
-    console.error(JSON.stringify({ stage: "write-published-failed", error: err && err.message }));
-    return reply(500, { error: "dynamo_write_failed" });
-  }
-
-  let commitSha = null;
-  try {
-    const history = await loadHistory(120);
-    const artifact = buildReachArtifact(merged, history);
-    commitSha = await commitReachJson(artifact);
-  } catch (err) {
-    // The record is published in Dynamo; the public artifact commit
-    // is best-effort. Surface to admin response so operator sees it.
-    console.error(JSON.stringify({ stage: "commit-reach-failed", error: err && err.message }));
-  }
-
-  return reply(200, {
+  const result = {
     ok: true,
-    published: true,
-    parsed,
-    per_image: perImageParses,
     image_count: images.length,
-    record: merged,
-    commit_sha: commitSha
-  });
+    per_image: envelopes,
+    unknown_count: unknownCount,
+    reach: null,
+    spotify: null
+  };
+
+  // ---- Reach (DistroKid) pipeline -----------------------------
+  if (reachParses.length) {
+    const parsed = mergeParses(reachParses);
+    console.log(JSON.stringify({
+      stage: "merged-reach-parse",
+      total_streams: parsed.total_streams,
+      last_90: parsed.last_90,
+      last_30: parsed.last_30,
+      last_7: parsed.last_7,
+      country_count: Array.isArray(parsed.per_country) ? parsed.per_country.length : 0
+    }));
+
+    let lastPublished = null;
+    try { lastPublished = await loadLatestPublished(); }
+    catch (err) {
+      console.error(JSON.stringify({ stage: "load-latest-failed", error: err && err.message }));
+      return reply(500, { error: "dynamo_read_failed" });
+    }
+    const sane = sanityCheck(parsed, lastPublished);
+
+    if (!sane.ok) {
+      const rejected = {
+        record_id: newRecordId(),
+        record_kind: "reach",
+        parsed_at: ts,
+        total_streams: parsed.total_streams || 0,
+        last_90: parsed.last_90 || 0,
+        last_30: parsed.last_30 || 0,
+        last_7: parsed.last_7 || 0,
+        per_country: parsed.per_country || [],
+        published: false,
+        review_flag: sane.reason,
+        review_detail: sane.detail,
+        last_published_total: (lastPublished && lastPublished.total_streams) || 0
+      };
+      try { await writeRecord(rejected); }
+      catch (err) {
+        console.error(JSON.stringify({ stage: "write-rejected-failed", error: err && err.message }));
+      }
+      result.reach = {
+        published: false,
+        review_flag: sane.reason,
+        review_detail: sane.detail,
+        parsed,
+        last_published: lastPublished
+      };
+    } else {
+      const merged = {
+        record_id: newRecordId(),
+        record_kind: "reach",
+        parsed_at: ts,
+        total_streams: preservedTotal(parsed, lastPublished),
+        last_90: preservedField(parsed, lastPublished, "last_90"),
+        last_30: preservedField(parsed, lastPublished, "last_30"),
+        last_7: preservedField(parsed, lastPublished, "last_7"),
+        per_country: mergePerCountry(parsed, lastPublished),
+        published: true
+      };
+      try { await writeRecord(merged); }
+      catch (err) {
+        console.error(JSON.stringify({ stage: "write-published-failed", error: err && err.message }));
+        return reply(500, { error: "dynamo_write_failed" });
+      }
+      let commitSha = null;
+      try {
+        const history = await loadHistory(120);
+        const artifact = buildReachArtifact(merged, history);
+        commitSha = await commitReachJson(artifact);
+      } catch (err) {
+        console.error(JSON.stringify({ stage: "commit-reach-failed", error: err && err.message }));
+      }
+      result.reach = { published: true, parsed, record: merged, commit_sha: commitSha };
+    }
+  }
+
+  // ---- Spotify songs pipeline ---------------------------------
+  if (spotifyParses.length) {
+    const parsedSpotify = mergeSpotifyParses(spotifyParses);
+    if (!parsedSpotify || !parsedSpotify.songs.length) {
+      result.spotify = { published: false, review_flag: "empty_parse", review_detail: "no songs read from screenshot" };
+    } else {
+      console.log(JSON.stringify({
+        stage: "merged-spotify-parse",
+        song_count: parsedSpotify.songs.length,
+        top_song: parsedSpotify.songs[0] && parsedSpotify.songs[0].title,
+        top_streams: parsedSpotify.songs[0] && parsedSpotify.songs[0].streams
+      }));
+
+      let lastSpotify = null;
+      try { lastSpotify = await loadLatestSpotifyPublished(); }
+      catch (err) {
+        console.error(JSON.stringify({ stage: "load-latest-spotify-failed", error: err && err.message }));
+      }
+      const saneS = sanityCheckSpotify(parsedSpotify, lastSpotify);
+
+      if (!saneS.ok) {
+        const rejected = {
+          record_id: newRecordId(),
+          record_kind: "spotify_songs",
+          parsed_at: ts,
+          songs: parsedSpotify.songs,
+          published: false,
+          review_flag: saneS.reason,
+          review_detail: saneS.detail
+        };
+        try { await writeRecord(rejected); }
+        catch (err) {
+          console.error(JSON.stringify({ stage: "write-spotify-rejected-failed", error: err && err.message }));
+        }
+        result.spotify = {
+          published: false,
+          review_flag: saneS.reason,
+          review_detail: saneS.detail,
+          parsed: parsedSpotify,
+          last_published: lastSpotify
+        };
+      } else {
+        const sRecord = {
+          record_id: newRecordId(),
+          record_kind: "spotify_songs",
+          parsed_at: ts,
+          songs: parsedSpotify.songs,
+          published: true
+        };
+        try { await writeRecord(sRecord); }
+        catch (err) {
+          console.error(JSON.stringify({ stage: "write-spotify-published-failed", error: err && err.message }));
+          return reply(500, { error: "dynamo_write_failed_spotify" });
+        }
+        let sCommitSha = null;
+        try {
+          const artifact = buildSpotifyArtifact(sRecord);
+          sCommitSha = await commitSpotifySongsJson(artifact);
+        } catch (err) {
+          console.error(JSON.stringify({ stage: "commit-spotify-failed", error: err && err.message }));
+        }
+        result.spotify = { published: true, parsed: parsedSpotify, record: sRecord, commit_sha: sCommitSha };
+      }
+    }
+  }
+
+  if (!reachParses.length && !spotifyParses.length) {
+    result.ok = false;
+    result.error = "no_recognized_screens";
+    result.detail = "none of the uploaded screenshots matched a known type";
+  }
+
+  return reply(200, result);
 };
 
 // Exports for unit testing (no live IO).
@@ -639,12 +917,18 @@ module.exports = {
   handler: exports.handler,
   intOrNull,
   normalizeParsed,
+  normalizeEnvelope,
+  normalizeReachData,
+  normalizeSpotifyData,
   canonicalizeCountry,
   sanityCheck,
+  sanityCheckSpotify,
   mergeParses,
+  mergeSpotifyParses,
   mergePerCountry,
   preservedTotal,
   preservedField,
   buildReachArtifact,
+  buildSpotifyArtifact,
   SANITY_CEILING
 };

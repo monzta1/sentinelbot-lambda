@@ -225,6 +225,140 @@ assertEqual(pub.mergeParses(null), {}, "mergeParses: null -> {}");
   assert(!("total_streams" in merged), "mergeParses: country-only parse leaves total absent");
 }
 
+// --- normalizeEnvelope: handles tagged envelopes correctly ---
+{
+  const totals = pub.normalizeEnvelope({
+    type: "distrokid_totals",
+    data: { total_streams: "9,724", last_90: "7,411" }
+  });
+  assertEqual(totals.type, "distrokid_totals", "envelope: type preserved for totals");
+  assertEqual(totals.data.total_streams, 9724, "envelope: totals normalized");
+  assertEqual(totals.data.last_90, 7411, "envelope: last_90 normalized");
+
+  const countries = pub.normalizeEnvelope({
+    type: "distrokid_countries",
+    data: { per_country: [{ country: "United States", streams: "3,164" }] }
+  });
+  assertEqual(countries.type, "distrokid_countries", "envelope: type preserved for countries");
+  assertEqual(countries.data.per_country[0].code, "US", "envelope: country code mapped");
+
+  const songs = pub.normalizeEnvelope({
+    type: "spotify_songs",
+    data: { songs: [{ title: "Silent As Night", streams: "4,270" }, { title: "Quake", streams: "897" }] }
+  });
+  assertEqual(songs.type, "spotify_songs", "envelope: type preserved for songs");
+  assertEqual(songs.data.songs.length, 2, "envelope: songs count");
+  assertEqual(songs.data.songs[0].streams, 4270, "envelope: song streams int");
+
+  const unknown = pub.normalizeEnvelope({ type: "unknown", data: {} });
+  assertEqual(unknown.type, "unknown", "envelope: unknown stays unknown");
+}
+
+// --- normalizeEnvelope: infers type from flat (untagged) shape ---
+{
+  const flat = pub.normalizeEnvelope({ total_streams: "9,724" });
+  assertEqual(flat.type, "distrokid_totals", "envelope: flat with total_streams -> totals");
+
+  const flatSongs = pub.normalizeEnvelope({ songs: [{ title: "Quake", streams: 100 }] });
+  assertEqual(flatSongs.type, "spotify_songs", "envelope: flat with songs -> spotify");
+}
+
+// --- normalizeSpotifyData: rejects invalid rows ---
+{
+  const out = pub.normalizeSpotifyData({
+    songs: [
+      { title: "Quake", streams: 897 },
+      { title: "", streams: 100 },
+      { title: "1000 Suns", streams: "737" },
+      { title: "Empty", streams: 0 },
+      { title: "Bad", streams: "abc" }
+    ]
+  });
+  assertEqual(out.songs.length, 2, "normalizeSpotify: drops empty title, zero, non-numeric");
+  assertEqual(out.songs[0].streams, 897, "normalizeSpotify: first kept");
+  assertEqual(out.songs[1].streams, 737, "normalizeSpotify: comma stripped");
+}
+
+// --- mergeSpotifyParses: empty / single passthrough ---
+assertEqual(pub.mergeSpotifyParses([]), null, "mergeSpotify: empty list -> null");
+assertEqual(pub.mergeSpotifyParses(null), null, "mergeSpotify: null -> null");
+{
+  const only = { songs: [{ title: "Quake", streams: 100 }] };
+  const merged = pub.mergeSpotifyParses([only]);
+  assertEqual(merged.songs.length, 1, "mergeSpotify: single passthrough length");
+  assertEqual(merged.songs[0].streams, 100, "mergeSpotify: single passthrough value");
+}
+
+// --- mergeSpotifyParses: take MAX for duplicate titles, union otherwise ---
+{
+  const a = { songs: [{ title: "Quake", streams: 800 }, { title: "1000 Suns", streams: 737 }] };
+  const b = { songs: [{ title: "Quake", streams: 897 }, { title: "Sentinels", streams: 503 }] };
+  const merged = pub.mergeSpotifyParses([a, b]);
+  assertEqual(merged.songs.length, 3, "mergeSpotify: union of unique titles");
+  const quake = merged.songs.find((s) => s.title === "Quake");
+  assertEqual(quake.streams, 897, "mergeSpotify: max count for duplicate title");
+  // Should be sorted desc by streams
+  assertEqual(merged.songs[0].title, "Quake", "mergeSpotify: sorted desc -- Quake first");
+  assertEqual(merged.songs[1].title, "1000 Suns", "mergeSpotify: sorted desc -- 1000 Suns second");
+  assertEqual(merged.songs[2].title, "Sentinels", "mergeSpotify: sorted desc -- Sentinels third");
+}
+
+// --- sanityCheckSpotify: no prior -> ok ---
+{
+  const r = pub.sanityCheckSpotify({ songs: [{ title: "Q", streams: 100 }] }, null);
+  assert(r.ok === true, "sanitySpotify: no prior -> ok");
+}
+
+// --- sanityCheckSpotify: empty parse rejected ---
+{
+  const r = pub.sanityCheckSpotify({ songs: [] }, { songs: [{ title: "Q", streams: 100 }] });
+  assert(r.ok === false && r.reason === "empty_parse", "sanitySpotify: empty parse rejected");
+}
+
+// --- sanityCheckSpotify: known song dropped -> rejected ---
+{
+  const prev = { songs: [{ title: "Quake", streams: 800 }, { title: "1000 Suns", streams: 700 }] };
+  const cur = { songs: [{ title: "Quake", streams: 750 }, { title: "1000 Suns", streams: 737 }] };
+  const r = pub.sanityCheckSpotify(cur, prev);
+  assert(r.ok === false && r.reason === "song_dropped", "sanitySpotify: dropped song rejected");
+}
+
+// --- sanityCheckSpotify: equal or higher -> ok ---
+{
+  const prev = { songs: [{ title: "Quake", streams: 800 }] };
+  const cur = { songs: [{ title: "Quake", streams: 897 }] };
+  const r = pub.sanityCheckSpotify(cur, prev);
+  assert(r.ok === true, "sanitySpotify: increase accepted");
+  const eq = pub.sanityCheckSpotify({ songs: [{ title: "Quake", streams: 800 }] }, prev);
+  assert(eq.ok === true, "sanitySpotify: equal accepted");
+}
+
+// --- sanityCheckSpotify: new song appears -> ok (first appearance always accepted) ---
+{
+  const prev = { songs: [{ title: "Quake", streams: 800 }] };
+  const cur = { songs: [{ title: "Quake", streams: 897 }, { title: "Ruach", streams: 378 }] };
+  const r = pub.sanityCheckSpotify(cur, prev);
+  assert(r.ok === true, "sanitySpotify: new song accepted");
+}
+
+// --- buildSpotifyArtifact: shape + sort + totals ---
+{
+  const rec = {
+    parsed_at: "2026-05-24T18:00:00Z",
+    songs: [
+      { title: "Quake", streams: 897 },
+      { title: "Silent As Night", streams: 4270 },
+      { title: "1000 Suns", streams: 737 }
+    ]
+  };
+  const a = pub.buildSpotifyArtifact(rec);
+  assertEqual(a.source, "Spotify for Artists", "spotifyArtifact: source label");
+  assertEqual(a.track_count, 3, "spotifyArtifact: track_count");
+  assertEqual(a.total_spotify_streams, 897 + 4270 + 737, "spotifyArtifact: sum");
+  assertEqual(a.songs[0].title, "Silent As Night", "spotifyArtifact: sorted desc -- top track first");
+  assertEqual(a.last_published_at, "2026-05-24T18:00:00Z", "spotifyArtifact: last_published_at carried");
+}
+
 // --- SANITY_CEILING export sanity (default 2500 unless env overrides) ---
 assert(typeof pub.SANITY_CEILING === "number" && pub.SANITY_CEILING >= 100, "SANITY_CEILING is a positive number");
 
