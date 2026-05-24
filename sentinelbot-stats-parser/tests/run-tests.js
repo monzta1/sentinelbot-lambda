@@ -161,6 +161,70 @@ assertEqual(pub.mergePerCountry({}, null), [], "merge: both empty -> []");
   assert(typeof artifact.generated_at === "string", "reach: generated_at ISO string");
 }
 
+// --- mergeParses: empty / single passthrough ---
+assertEqual(pub.mergeParses([]), {}, "mergeParses: empty list -> {}");
+assertEqual(pub.mergeParses(null), {}, "mergeParses: null -> {}");
+{
+  const only = { total_streams: 9724, last_90: 7411 };
+  assertEqual(pub.mergeParses([only]), only, "mergeParses: single parse passthrough");
+}
+
+// --- mergeParses: totals screen + country screen -> one combined record ---
+{
+  const totals = { total_streams: 9724, last_90: 7411, last_30: 5968, last_7: 1227 };
+  const countries = {
+    per_country: [
+      { country: "United States", code: "US", flag: "🇺🇸", streams: 3164 },
+      { country: "Germany", code: "DE", flag: "🇩🇪", streams: 589 }
+    ]
+  };
+  const merged = pub.mergeParses([totals, countries]);
+  assertEqual(merged.total_streams, 9724, "mergeParses: total from totals screen");
+  assertEqual(merged.last_90, 7411, "mergeParses: last_90 carried");
+  assertEqual(merged.last_30, 5968, "mergeParses: last_30 carried");
+  assertEqual(merged.last_7, 1227, "mergeParses: last_7 carried");
+  assertEqual(merged.per_country.length, 2, "mergeParses: per_country carried");
+  assertEqual(merged.per_country[0].code, "US", "mergeParses: per_country US first");
+}
+
+// --- mergeParses: order independence (country first, totals second) ---
+{
+  const totals = { total_streams: 9724, last_90: 7411 };
+  const countries = { per_country: [{ country: "United States", code: "US", flag: "🇺🇸", streams: 3164 }] };
+  const merged = pub.mergeParses([countries, totals]);
+  assertEqual(merged.total_streams, 9724, "mergeParses: order-independent total");
+  assertEqual(merged.per_country.length, 1, "mergeParses: order-independent countries");
+}
+
+// --- mergeParses: two parses both carry total -> max wins ---
+{
+  const a = { total_streams: 9500 };
+  const b = { total_streams: 9724 };
+  const merged = pub.mergeParses([a, b]);
+  assertEqual(merged.total_streams, 9724, "mergeParses: max total wins across parses");
+}
+
+// --- mergeParses: longer per_country list wins ---
+{
+  const small = { per_country: [{ country: "United States", code: "US", flag: "🇺🇸", streams: 100 }] };
+  const big = {
+    per_country: [
+      { country: "United States", code: "US", flag: "🇺🇸", streams: 3164 },
+      { country: "Germany", code: "DE", flag: "🇩🇪", streams: 589 },
+      { country: "France", code: "FR", flag: "🇫🇷", streams: 580 }
+    ]
+  };
+  const merged = pub.mergeParses([small, big]);
+  assertEqual(merged.per_country.length, 3, "mergeParses: longer per_country list wins");
+}
+
+// --- mergeParses: only country screen -> total omitted (preservedField will fall back to last published) ---
+{
+  const countries = { per_country: [{ country: "Germany", code: "DE", flag: "🇩🇪", streams: 589 }] };
+  const merged = pub.mergeParses([countries]);
+  assert(!("total_streams" in merged), "mergeParses: country-only parse leaves total absent");
+}
+
 // --- SANITY_CEILING export sanity (default 2500 unless env overrides) ---
 assert(typeof pub.SANITY_CEILING === "number" && pub.SANITY_CEILING >= 100, "SANITY_CEILING is a positive number");
 

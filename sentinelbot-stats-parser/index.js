@@ -270,6 +270,50 @@ function normalizeParsed(p) {
 }
 
 // =====================================================
+// Multi-image merge: the operator typically uploads two
+// DistroKid screens together -- the totals screen (total_streams,
+// last_90, last_30, last_7) and the country screen (per_country).
+// They describe the same moment, so combine them into one parsed
+// record before sanity check + write.
+//
+// Rules:
+//   - For numeric fields, take the MAX across parses that set it.
+//     DistroKid stats only increment, so if both screens happen to
+//     show a total, the higher one is the freshest.
+//   - For per_country, the longest non-empty list wins. If neither
+//     parse carries countries, omit.
+//   - Fields no parse sets are omitted (downstream preservedField
+//     falls back to the last published value).
+// =====================================================
+function mergeParses(parses) {
+  const list = Array.isArray(parses) ? parses.filter(Boolean) : [];
+  if (!list.length) return {};
+  if (list.length === 1) return list[0];
+  const out = {};
+  const numericFields = ["total_streams", "last_90", "last_30", "last_7"];
+  for (const field of numericFields) {
+    let best = null;
+    for (const p of list) {
+      if (p && p[field] != null) {
+        const v = Number(p[field]);
+        if (Number.isFinite(v) && (best == null || v > best)) best = v;
+      }
+    }
+    if (best != null) out[field] = best;
+  }
+  let bestCountries = null;
+  for (const p of list) {
+    if (p && Array.isArray(p.per_country) && p.per_country.length) {
+      if (!bestCountries || p.per_country.length > bestCountries.length) {
+        bestCountries = p.per_country;
+      }
+    }
+  }
+  if (bestCountries) out.per_country = bestCountries;
+  return out;
+}
+
+// =====================================================
 // Sanity check.
 // =====================================================
 function sanityCheck(parsed, lastPublished) {
@@ -460,19 +504,35 @@ exports.handler = async (event = {}) => {
 
   const body = readBody(event);
   if (!body || typeof body !== "object") return reply(400, { error: "invalid_json" });
-  const imageBase64 = body.image_base64 || body.image;
-  const mimeType = body.mime_type || "image/jpeg";
-  if (!imageBase64 || typeof imageBase64 !== "string") {
-    return reply(400, { error: "missing_image_base64" });
-  }
 
-  let parsed;
+  // Accept either a single image (legacy: { image_base64, mime_type })
+  // or an array of images (new: { images: [{ image_base64, mime_type }, ...] }).
+  // The admin page uploads both DistroKid screens (totals + countries)
+  // together; we parse each and merge into one record.
+  const images = [];
+  if (Array.isArray(body.images) && body.images.length) {
+    for (const img of body.images) {
+      if (img && typeof img.image_base64 === "string" && img.image_base64) {
+        images.push({ image_base64: img.image_base64, mime_type: img.mime_type || "image/jpeg" });
+      }
+    }
+  } else {
+    const single = body.image_base64 || body.image;
+    if (single && typeof single === "string") {
+      images.push({ image_base64: single, mime_type: body.mime_type || "image/jpeg" });
+    }
+  }
+  if (!images.length) return reply(400, { error: "missing_image_base64" });
+  if (images.length > 4) return reply(400, { error: "too_many_images", detail: "max 4 per upload" });
+
+  let perImageParses;
   try {
-    parsed = await parseScreenshot(imageBase64, mimeType);
+    perImageParses = await Promise.all(images.map((img) => parseScreenshot(img.image_base64, img.mime_type)));
   } catch (err) {
     console.error(JSON.stringify({ stage: "vision-parse-failed", error: err && err.message }));
     return reply(502, { error: "vision_parse_failed", detail: err.message });
   }
+  const parsed = mergeParses(perImageParses);
 
   let lastPublished = null;
   try { lastPublished = await loadLatestPublished(); }
@@ -509,6 +569,8 @@ exports.handler = async (event = {}) => {
       review_flag: sane.reason,
       review_detail: sane.detail,
       parsed,
+      per_image: perImageParses,
+      image_count: images.length,
       last_published: lastPublished
     });
   }
@@ -545,6 +607,8 @@ exports.handler = async (event = {}) => {
     ok: true,
     published: true,
     parsed,
+    per_image: perImageParses,
+    image_count: images.length,
     record: merged,
     commit_sha: commitSha
   });
@@ -557,6 +621,7 @@ module.exports = {
   normalizeParsed,
   canonicalizeCountry,
   sanityCheck,
+  mergeParses,
   mergePerCountry,
   preservedTotal,
   preservedField,
