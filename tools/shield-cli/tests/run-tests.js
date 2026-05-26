@@ -210,7 +210,10 @@ function runDropzoneScanCase() {
     "",
     "#lyrics",
     "Line 1",
-    "Line 2"
+    "Line 2",
+    "",
+    "#Reference",
+    "Genesis 1:1"
   ].join("\n"));
 
   fs.writeFileSync(path.join(dropzoneDir, "artwork-only.txt"), [
@@ -272,7 +275,10 @@ function runPartialExistingUpsertCase() {
     "",
     "#lyrics",
     "Go DOWN, Moses!",
-    "Burn through Egypt’s gates,"
+    "Burn through Egypt’s gates,",
+    "",
+    "#Reference",
+    "Exodus 3:7-10 | Exodus 5:1"
   ].join("\n"));
   fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "Let My People Go.jpg"));
 
@@ -332,7 +338,10 @@ function runCleanReplaceCase() {
     "",
     "#lyrics",
     "Go DOWN, Moses!",
-    "Burn through Egypt’s gates,"
+    "Burn through Egypt’s gates,",
+    "",
+    "#Reference",
+    "Exodus 5:1"
   ].join("\n"));
 
   fs.writeFileSync(stateFile, `${JSON.stringify({
@@ -396,11 +405,12 @@ function runSiteJsonSnapshotCase() {
     SHIELD_CLI_DROPZONE_DIR: dropzoneDir
   };
 
-  // Scenario 1: title + lyrics + artwork
+  // Scenario 1: title + lyrics + artwork (with required #Reference)
   fs.writeFileSync(path.join(dropzoneDir, "song.txt"), [
     "#title", "Let My People Go", "",
     "#songmeaning", "A cry for freedom.", "",
-    "#lyrics", "Go DOWN, Moses!", "Burn through Egypt's gates,"
+    "#lyrics", "Go DOWN, Moses!", "Burn through Egypt's gates,", "",
+    "#Reference", "Exodus 5:1"
   ].join("\n"));
   fs.copyFileSync(path.join(fixturesDir, "valid-song-with-artwork.jpg"), path.join(dropzoneDir, "something-random.jpg"));
 

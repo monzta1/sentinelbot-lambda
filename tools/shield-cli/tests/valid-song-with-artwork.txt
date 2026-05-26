@@ -4,3 +4,6 @@ Valid Song With Artwork
 #lyrics
 Line 1
 Line 2
+
+#Reference
+Genesis 1:1 | John 1:1

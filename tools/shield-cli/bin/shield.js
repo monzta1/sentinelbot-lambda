@@ -438,13 +438,22 @@ function buildSongContentPayload(filePath, parsed, slug) {
   // built from two separate template sections so the user can write
   // a multi-line quote without escaping. Both default to null when
   // the template did not include them, so existing templates without
-  // these sections still ingest cleanly.
+  // these sections still ingest cleanly. But a missing Reference is
+  // almost always an oversight on a Shieldbearer release -- the songs
+  // are built from Scripture -- so loudly warn the operator so the
+  // missing refs don't silently ship to the live site.
   const reference = normalizeValue(parsed.reference);
   const scriptureRef = normalizeValue(parsed.scriptureRef);
   const scriptureQuote = normalizeValue(parsed.scriptureQuote);
   const scripture = (scriptureRef || scriptureQuote)
     ? { ref: scriptureRef || "", quote: scriptureQuote || "" }
     : null;
+  // Only warn when this looks like a real ingest (lyrics present).
+  // The empty-template / skip paths have their own handling and a
+  // warning there would be noise.
+  if (!reference && lyrics) {
+    warnMissingReference(slug, parsed.title);
+  }
   return {
     lyrics,
     lyricsPreview: extractLyricsPreview(parsed.lyrics),
@@ -455,6 +464,40 @@ function buildSongContentPayload(filePath, parsed, slug) {
     reference,
     scripture
   };
+}
+
+// Loud stderr warning when an ingest is about to ship a song without
+// a #Reference section. Goes to stderr so stdout JSON stays clean for
+// scripts that pipe ingest output. Operator can still proceed; this
+// is just a visible nudge.
+function warnMissingReference(slug, title) {
+  const label = title || slug || "this release";
+  const banner = "================================================================================";
+  process.stderr.write([
+    "",
+    banner,
+    "  WARNING: no #Reference section found for \"" + label + "\".",
+    "",
+    "  Shieldbearer songs are built from Scripture and every release on the site",
+    "  carries its primary Scripture references. Without a #Reference section",
+    "  this song will deploy with EMPTY scripture data in site.json, and the",
+    "  /song-meanings dossier will have nothing to link to BibleGateway.",
+    "",
+    "  Add a section like this to the source .txt file and re-run ingest:",
+    "",
+    "    #Reference",
+    "    Book Chapter:Verse | Book Chapter:Verse | Book Chapter:Verse",
+    "",
+    "    #ScriptureRef",
+    "    Book Chapter:Verse",
+    "",
+    "    #ScriptureQuote",
+    "    \"The verse text to pull up on the page.\"",
+    "",
+    "  Continuing anyway. Re-ingest with refs to fix the live site.",
+    banner,
+    ""
+  ].join("\n"));
 }
 
 function readSongFile(filePath) {
