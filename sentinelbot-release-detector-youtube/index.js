@@ -72,48 +72,82 @@ function normalizeLyricsBlock(value) {
 }
 
 function extractLyricsFromDescription(description) {
-  const lines = String(description || "")
+  // Find the longest contiguous run of lyric-shape lines in the description
+  // and emit just that block, blank lines preserved for verse separation.
+  // Drop the surrounding promo (emoji-prefix marketing, hashtags, URLs,
+  // dedication / production-notes / "inspired by" boilerplate) without
+  // letting them split a real lyrics block in two.
+  const rawLines = String(description || "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "\n")
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+    .map((line) => line.trim());
 
-  if (!lines.length) return "";
+  if (!rawLines.length) return "";
 
-  const noisePatterns = [
-    /https?:\/\//i,
-    /\b(spotify|youtube|subscribe|follow|merch|pre-save|stream|watch|official video|out now|available now|link in bio|shorts)\b/i
-  ];
-  const sectionPattern = /^(?:[\(\[]?\s*(verse|chorus|bridge|intro|outro|pre-chorus|hook)(?:\s*\d+)?\s*[\)\]]?\s*[:\-–—]?\s*)$/i;
+  const NOISE_KEYWORDS = /\b(spotify|youtube|subscribe|follow|merch|pre-save|stream|watch|official video|out now|available now|link in bio|shorts|dedication|production notes|inspired by|artist:|song:|like\s+just\s+reach\s+out)\b/i;
+  const SECTION_PATTERN = /^(?:[\(\[]?\s*(verse|chorus|bridge|intro|outro|pre-chorus|hook)(?:\s*\d+)?\s*[\)\]]?\s*[:\-–—]?\s*)$/i;
+  const URL_PATTERN = /https?:\/\//i;
+  const HASHTAG_LINE = /^#\S+/;
+  // Lines that LEAD with a typographic emoji are virtually always promo.
+  const EMOJI_LEAD = /^[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{1F004}\u{1F0CF}]/u;
 
-  const kept = [];
-  let sectionCount = 0;
-  let lyricLineCount = 0;
-
-  for (const line of lines) {
-    if (noisePatterns.some((pattern) => pattern.test(line))) {
-      continue;
-    }
-
-    if (sectionPattern.test(line)) {
-      sectionCount += 1;
-      kept.push(line.replace(/[:\-–—\s]+$/g, "").trim());
-      continue;
-    }
-
+  function classify(line) {
+    if (!line) return "blank";
+    if (URL_PATTERN.test(line)) return "noise";
+    if (NOISE_KEYWORDS.test(line)) return "noise";
+    if (HASHTAG_LINE.test(line)) return "noise";
+    if (EMOJI_LEAD.test(line)) return "noise";
+    if (SECTION_PATTERN.test(line)) return "section";
+    if (!/[A-Za-z]/.test(line)) return "blank";
     const wordCount = line.split(/\s+/).filter(Boolean).length;
-    const lyricish = wordCount > 0 && wordCount <= 14 && /[A-Za-z]/.test(line);
-    if (lyricish) {
-      lyricLineCount += 1;
-      kept.push(line);
-    }
+    if (wordCount === 0) return "blank";
+    if (wordCount > 14) return "noise"; // prose paragraph, not a lyric line
+    return "lyric";
   }
 
-  const looksStructured = sectionCount >= 2 || (sectionCount >= 1 && lyricLineCount >= 3) || lyricLineCount >= 6;
-  if (!looksStructured) return "";
+  const classes = rawLines.map(classify);
 
-  const lyrics = normalizeLyricsBlock(kept.join("\n"));
+  // Walk the lines, building runs that contain lyric/section/blank lines
+  // but never noise. Track the run with the most lyric lines.
+  let bestStart = -1;
+  let bestEnd = -1;
+  let bestLyricCount = 0;
+  let curStart = -1;
+  let curLyricCount = 0;
+
+  function closeRun(endExclusive) {
+    if (curStart < 0) return;
+    if (curLyricCount > bestLyricCount) {
+      bestStart = curStart;
+      bestEnd = endExclusive;
+      bestLyricCount = curLyricCount;
+    }
+    curStart = -1;
+    curLyricCount = 0;
+  }
+
+  for (let i = 0; i < rawLines.length; i += 1) {
+    const c = classes[i];
+    if (c === "noise") {
+      closeRun(i);
+    } else {
+      if (curStart < 0) curStart = i;
+      if (c === "lyric" || c === "section") curLyricCount += 1;
+    }
+  }
+  closeRun(rawLines.length);
+
+  if (bestStart < 0 || bestLyricCount < 6) return "";
+
+  // Trim leading and trailing blanks inside the chosen block.
+  let s = bestStart;
+  let e = bestEnd;
+  while (s < e && classes[s] === "blank") s += 1;
+  while (e > s && classes[e - 1] === "blank") e -= 1;
+  if (e - s === 0) return "";
+
+  const lyrics = normalizeLyricsBlock(rawLines.slice(s, e).join("\n"));
   return lyrics.length >= 100 ? lyrics : "";
 }
 
