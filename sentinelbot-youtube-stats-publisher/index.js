@@ -72,6 +72,15 @@ function hashContent(content) {
 // Date helpers. YouTube Analytics uses YYYY-MM-DD strings, always
 // UTC. We snapshot "now" once per invocation so all reports share
 // the same end date.
+//
+// Reporting lag: YouTube Analytics doesn't publish geographic and
+// dimensional reports for the previous 1-2 days. Asking for today's
+// or yesterday's country breakdown returns empty rows. The
+// "last 48h" window therefore ends at today-2 and starts at today-4,
+// giving us the most recent 48 hours of *available* data rather than
+// the most recent 48 hours of calendar time. The 7-day and 30-day
+// windows are lag-tolerant (the missing tail is a small fraction)
+// so they continue to end at today.
 // ============================================================
 
 function daysAgo(n, ref = new Date()) {
@@ -79,10 +88,13 @@ function daysAgo(n, ref = new Date()) {
   return d.toISOString().slice(0, 10);
 }
 
+const ANALYTICS_LAG_DAYS = 2;
+
 function buildDateWindows(ref = new Date()) {
   const today = ref.toISOString().slice(0, 10);
+  const lagEnd = daysAgo(ANALYTICS_LAG_DAYS, ref);
   return {
-    last48h: { start: daysAgo(2, ref), end: today },
+    last48h: { start: daysAgo(ANALYTICS_LAG_DAYS + 2, ref), end: lagEnd },
     last7: { start: daysAgo(7, ref), end: today },
     last30: { start: daysAgo(30, ref), end: today }
   };

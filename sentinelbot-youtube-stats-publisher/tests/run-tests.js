@@ -30,17 +30,21 @@ function assertEqual(actual, expected, label) {
   assertEqual(pub.daysAgo(2, ref), "2026-05-22", "daysAgo: 2 -> 48h back");
 }
 
-// --- buildDateWindows: returns last48h, last7, last30 keyed correctly ---
+// --- buildDateWindows: 48h window is lag-shifted; 7d/30d are not ---
+// YouTube Analytics doesn't publish geographic data for the previous
+// 1-2 days. The 48h window ends at today-2 and starts at today-4 so
+// it asks for the most recent 48h of *available* data. The 7- and
+// 30-day windows include today; their tail-end gap is small and
+// they remain anchored to "now".
 {
   const ref = new Date("2026-05-24T17:00:00Z");
   const w = pub.buildDateWindows(ref);
-  assertEqual(w.last48h.start, "2026-05-22", "windows: last48h start");
-  assertEqual(w.last48h.end, "2026-05-24", "windows: last48h end");
-  assertEqual(w.last7.start, "2026-05-17", "windows: last7 start");
-  assertEqual(w.last30.start, "2026-04-24", "windows: last30 start");
-  // All windows share the same end (today)
-  assertEqual(w.last48h.end, w.last7.end, "windows: all ends match");
-  assertEqual(w.last7.end, w.last30.end, "windows: all ends match");
+  assertEqual(w.last48h.start, "2026-05-20", "windows: last48h start (today-4)");
+  assertEqual(w.last48h.end,   "2026-05-22", "windows: last48h end (today-2, before lag)");
+  assertEqual(w.last7.start,   "2026-05-17", "windows: last7 start");
+  assertEqual(w.last7.end,     "2026-05-24", "windows: last7 end (today)");
+  assertEqual(w.last30.start,  "2026-04-24", "windows: last30 start");
+  assertEqual(w.last30.end,    "2026-05-24", "windows: last30 end (today)");
 }
 
 // --- decorateCountry: known codes get name + flag ---
