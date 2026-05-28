@@ -227,6 +227,26 @@ async function fetchGeography(accessToken, startDate, endDate) {
   });
 }
 
+async function fetchCities(accessToken, startDate, endDate) {
+  const report = await runGa4Report(accessToken, {
+    dateRanges: [{ startDate, endDate }],
+    dimensions: [{ name: "city" }, { name: "region" }],
+    metrics: [{ name: "sessions" }],
+    orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+    limit: 25
+  });
+  const rows = report?.rows || [];
+  const total = rows.reduce((acc, row) => acc + Number(row?.metricValues?.[0]?.value || 0), 0);
+  return rows.slice(0, 6).map((row) => {
+    const city = String(row?.dimensionValues?.[0]?.value || "Unknown");
+    const region = String(row?.dimensionValues?.[1]?.value || "");
+    const name = region && region !== "(not set)" ? `${city}, ${region}` : city;
+    const sessions = Number(row?.metricValues?.[0]?.value || 0);
+    const share = total > 0 ? Math.round((sessions / total) * 1000) / 10 : 0;
+    return { name, sessions, share };
+  });
+}
+
 async function fetchTopEvents(accessToken, startDate, endDate) {
   const report = await runGa4Report(accessToken, {
     dateRanges: [{ startDate, endDate }],
@@ -357,13 +377,14 @@ async function githubRequestWithRetry(url, options = {}, context = {}) {
 // Artifact builder + writer.
 // ============================================================
 
-function buildMetricsArtifact({ headline, channels, geography, events, shipped, period }) {
+function buildMetricsArtifact({ headline, channels, geography, cities, events, shipped, period }) {
   return {
     generatedAt: nowIso(),
     period,
     headline,
     channels,
     geography: geography || [],
+    cities: cities || [],
     events,
     shipped,
     source: "ga4-data-api",
@@ -429,11 +450,12 @@ exports.handler = async (event = {}) => {
     const serviceAccount = await loadServiceAccount();
     const accessToken = await fetchGoogleAccessToken(serviceAccount);
 
-    const [currentSessions, previousSessions, channels, geography, topEvents, existing] = await Promise.all([
+    const [currentSessions, previousSessions, channels, geography, cities, topEvents, existing] = await Promise.all([
       fetchSessionsForRange(accessToken, period.start, period.end),
       fetchSessionsForRange(accessToken, previous.start, previous.end),
       fetchChannels(accessToken, period.start, period.end),
       fetchGeography(accessToken, period.start, period.end),
+      fetchCities(accessToken, period.start, period.end),
       fetchTopEvents(accessToken, period.start, period.end),
       fetchExistingShipped()
     ]);
@@ -448,6 +470,7 @@ exports.handler = async (event = {}) => {
       headline,
       channels,
       geography,
+      cities,
       events: topEvents,
       shipped: existing.shipped,
       period
@@ -459,6 +482,7 @@ exports.handler = async (event = {}) => {
         previousSessions,
         channelsCount: channels.length,
         geographyCount: geography.length,
+        citiesCount: cities.length,
         eventsCount: topEvents.length,
         shippedCount: existing.shipped.length,
         elapsedMs: Date.now() - startedAt
@@ -472,6 +496,7 @@ exports.handler = async (event = {}) => {
       previousSessions,
       channelsCount: channels.length,
       geographyCount: geography.length,
+      citiesCount: cities.length,
       eventsCount: topEvents.length,
       shippedCount: existing.shipped.length,
       contentHash: writeResult.contentHash,
