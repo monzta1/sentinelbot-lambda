@@ -107,18 +107,29 @@ function assertEqual(actual, expected, label) {
   const period = { label: "May 2026 so far", start: "2026-05-01", end: "2026-05-31" };
   const headline = { sessions: 1234, deltaPct: 12.4, comparison: "vs April 2026" };
   const channels = [{ name: "Organic", sessions: 500, share: 40.5 }];
+  const geography = [{ name: "United States", sessions: 800, share: 64.8 }];
   const events = [{ name: "watch_now", count: 100, engagedShare: null }];
   const shipped = [{ date: "2026-05-01", label: "Thing" }];
-  const artifact = pub.buildMetricsArtifact({ headline, channels, events, shipped, period });
+  const artifact = pub.buildMetricsArtifact({ headline, channels, geography, events, shipped, period });
 
   assert("generatedAt" in artifact, "artifact has generatedAt");
   assertEqual(artifact.period, period, "period passes through");
   assertEqual(artifact.headline, headline, "headline passes through");
   assertEqual(artifact.channels, channels, "channels pass through");
+  assertEqual(artifact.geography, geography, "geography passes through");
   assertEqual(artifact.events, events, "events pass through");
   assertEqual(artifact.shipped, shipped, "shipped passes through");
   assertEqual(artifact.source, "ga4-data-api", "source tagged ga4-data-api");
   assert(typeof artifact.note === "string" && artifact.note.length > 0, "note is non-empty string");
+}
+
+// --- buildMetricsArtifact: geography defaults to [] when omitted ---
+{
+  const period = { label: "May 2026 so far", start: "2026-05-01", end: "2026-05-31" };
+  const artifact = pub.buildMetricsArtifact({
+    headline: { sessions: 1 }, channels: [], events: [], shipped: [], period
+  });
+  assertEqual(artifact.geography, [], "geography defaults to [] when omitted");
 }
 
 // --- buildCanonicalMetricsArtifact: ends with newline, valid JSON ---
