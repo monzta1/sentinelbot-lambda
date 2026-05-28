@@ -359,6 +359,57 @@ assertEqual(pub.mergeSpotifyParses(null), null, "mergeSpotify: null -> null");
   assertEqual(a.last_published_at, "2026-05-24T18:00:00Z", "spotifyArtifact: last_published_at carried");
 }
 
+// --- spotify_songs_28d envelope normalization ---
+{
+  const e = pub.normalizeEnvelope({
+    type: "spotify_songs_28d",
+    data: { songs: [{ title: "Quake", streams: 80 }, { title: "Sentinels", streams: 55 }] }
+  });
+  assertEqual(e.type, "spotify_songs_28d", "envelope: 28d type preserved");
+  assertEqual(e.data.songs.length, 2, "envelope: 28d songs normalized");
+  assertEqual(e.data.songs[0].streams, 80, "envelope: 28d streams retained");
+}
+
+// --- buildSpotify28dArtifact: window tag + total field + sort ---
+{
+  const rec = {
+    parsed_at: "2026-05-27T20:00:00Z",
+    songs: [
+      { title: "Silent As Night", streams: 312 },
+      { title: "Quake", streams: 80 },
+      { title: "Sentinels", streams: 55 }
+    ]
+  };
+  const a = pub.buildSpotify28dArtifact(rec);
+  assertEqual(a.source, "Spotify for Artists", "spotify28dArtifact: source label");
+  assertEqual(a.window, "28d", "spotify28dArtifact: window tagged 28d");
+  assertEqual(a.track_count, 3, "spotify28dArtifact: track_count");
+  assertEqual(a.total_spotify_streams_28d, 312 + 80 + 55, "spotify28dArtifact: 28d total uses 28d-suffixed key");
+  assertEqual(a.songs[0].title, "Silent As Night", "spotify28dArtifact: sorted desc");
+  assertEqual(a.last_published_at, "2026-05-27T20:00:00Z", "spotify28dArtifact: last_published_at carried");
+  // The lifetime artifact must NOT carry the 28d-only field name.
+  const a2 = pub.buildSpotifyArtifact(rec);
+  assert(a2.total_spotify_streams != null, "spotifyArtifact: lifetime uses total_spotify_streams");
+  assert(a2.total_spotify_streams_28d == null, "spotifyArtifact: lifetime does NOT use 28d-suffixed key");
+  assertEqual(a2.window, "all-time", "spotifyArtifact: lifetime tagged all-time");
+}
+
+// --- 28d and lifetime do not cross-pollute via normalizeByType ---
+{
+  const liveLife = pub.normalizeEnvelope({
+    type: "spotify_songs",
+    data: { songs: [{ title: "X", streams: 1000 }] }
+  });
+  const live28d = pub.normalizeEnvelope({
+    type: "spotify_songs_28d",
+    data: { songs: [{ title: "X", streams: 12 }] }
+  });
+  assertEqual(liveLife.type, "spotify_songs", "envelope: lifetime type preserved");
+  assertEqual(live28d.type, "spotify_songs_28d", "envelope: 28d type preserved");
+  assertEqual(liveLife.data.songs[0].streams, 1000, "envelope: lifetime streams isolated");
+  assertEqual(live28d.data.songs[0].streams, 12, "envelope: 28d streams isolated");
+}
+
 // --- SANITY_CEILING export sanity (default 2500 unless env overrides) ---
 assert(typeof pub.SANITY_CEILING === "number" && pub.SANITY_CEILING >= 100, "SANITY_CEILING is a positive number");
 

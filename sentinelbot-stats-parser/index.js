@@ -53,6 +53,7 @@ const GITHUB_REPO = process.env.GITHUB_REPO || "shieldbearer-website";
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "sentinelbot-stable";
 const REACH_JSON_PATH = "reach.json";
 const SPOTIFY_JSON_PATH = "spotify_songs.json";
+const SPOTIFY_28D_JSON_PATH = "spotify_songs_28d.json";
 
 // Anthropic vision model. Sonnet 4.6 is current per CLAUDE.md
 // memory; vision-capable; same key as SentinelBot handler.
@@ -188,7 +189,7 @@ function canonicalizeCountry(name) {
 async function parseScreenshot(imageBase64, mimeType) {
   if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not set");
   const prompt = [
-    "You are reading a music analytics screenshot. Identify which of three screen types this is, then extract its data.",
+    "You are reading a music analytics screenshot. Identify which screen type this is, then extract its data.",
     "",
     "Return ONLY valid JSON in the envelope below. No prose, no markdown fences, no commentary.",
     "",
@@ -198,20 +199,24 @@ async function parseScreenshot(imageBase64, mimeType) {
     "Type B: \"distrokid_countries\"",
     "  DistroKid 'Streams by Country' list. Each row is a flag + country name + a number. Examples: 'United States 3,164', 'The Netherlands 218'.",
     "",
-    "Type C: \"spotify_songs\"",
-    "  Spotify for Artists 'Songs' view. Tabs may read 'Songs / Releases / Playlists / Upcoming'. A subheader may read 'Streams · All-time'. Each row is a small square cover art, the song title on the left, and an all-time stream count on the right. Examples: 'Silent As Night 4,270', 'Quake 897'.",
+    "Type C: \"spotify_songs\"  (Spotify for Artists Top Tracks, ALL-TIME)",
+    "  Tabs may read 'Songs / Releases / Playlists / Upcoming'. The window filter near the top reads 'All-time' (sometimes 'Lifetime'). A subheader may read 'Streams · All-time'. Each row is a small square cover art, the song title, and a stream count.",
+    "",
+    "Type D: \"spotify_songs_28d\"  (Spotify for Artists Top Tracks, LAST 28 DAYS)",
+    "  Same layout as Type C, but the window filter near the top reads 'Last 28 days' (or '28 days' / 'Past 28 days'). The numbers will be smaller than the all-time version. If you see this label, return type 'spotify_songs_28d', NOT 'spotify_songs'.",
     "",
     "Rules:",
+    "- Inspect the time-window filter at the top of any Spotify Top Tracks screenshot before picking type C vs D. The label is the deciding signal.",
     "- Strip ALL commas from numbers. '4,270' becomes 4270.",
     "- Numbers are integers. No decimals.",
     "- Use names exactly as displayed.",
     "- If the screenshot is cropped, omit rows you cannot read clearly.",
     "- Do NOT guess at numbers you cannot read.",
-    "- If the screen does not match any of the three types, return type 'unknown'.",
+    "- If the screen does not match any of the four types, return type 'unknown'.",
     "",
     "Output exactly this JSON envelope (include only the data fields that apply to the detected type):",
     "{",
-    '  "type": "distrokid_totals" | "distrokid_countries" | "spotify_songs" | "unknown",',
+    '  "type": "distrokid_totals" | "distrokid_countries" | "spotify_songs" | "spotify_songs_28d" | "unknown",',
     '  "data": {',
     "    // For distrokid_totals:",
     '    "total_streams": <integer, from "Last 365 days">,',
@@ -220,7 +225,7 @@ async function parseScreenshot(imageBase64, mimeType) {
     '    "last_7": <integer>,',
     "    // For distrokid_countries:",
     '    "per_country": [ {"country": "<name>", "streams": <integer>}, ... ],',
-    "    // For spotify_songs:",
+    "    // For spotify_songs and spotify_songs_28d (same shape, different window):",
     '    "songs": [ {"title": "<song title>", "streams": <integer>}, ... ]',
     "  }",
     "}"
@@ -296,7 +301,7 @@ function normalizeByType(type, data) {
   if (type === "distrokid_totals" || type === "distrokid_countries") {
     return { type, data: normalizeReachData(data) };
   }
-  if (type === "spotify_songs") {
+  if (type === "spotify_songs" || type === "spotify_songs_28d") {
     return { type, data: normalizeSpotifyData(data) };
   }
   return { type: "unknown", data: {} };
@@ -505,6 +510,18 @@ async function loadLatestSpotifyPublished() {
   return items[0];
 }
 
+async function loadLatestSpotify28dPublished() {
+  const result = await dynamo.send(new ScanCommand({
+    TableName: TABLE_NAME,
+    FilterExpression: "published = :p AND record_kind = :k",
+    ExpressionAttributeValues: { ":p": true, ":k": "spotify_songs_28d" }
+  }));
+  const items = (result && result.Items) || [];
+  if (!items.length) return null;
+  items.sort((a, b) => String(b.parsed_at || "").localeCompare(String(a.parsed_at || "")));
+  return items[0];
+}
+
 async function writeRecord(record) {
   await dynamo.send(new PutCommand({ TableName: TABLE_NAME, Item: record }));
 }
@@ -597,6 +614,40 @@ async function commitSpotifySongsJson(artifact) {
   return d && d.commit && d.commit.sha;
 }
 
+async function readSpotify28dJsonSha() {
+  const url = `${buildGitHubContentsUrl(SPOTIFY_28D_JSON_PATH)}?ref=${encodeURIComponent(GITHUB_BRANCH)}`;
+  const r = await fetch(url, { method: "GET", headers: ghHeaders() });
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error("GH read failed " + r.status);
+  const d = await r.json();
+  return (d && d.sha) || null;
+}
+async function commitSpotify28dJson(artifact) {
+  if (!GITHUB_TOKEN) {
+    console.warn("GITHUB_TOKEN not set, skipping spotify_songs_28d.json commit");
+    return null;
+  }
+  const content = JSON.stringify(artifact, null, 2) + "\n";
+  const sha = await readSpotify28dJsonSha();
+  const body = {
+    message: `auto: spotify songs (28d) refresh (${(artifact.songs || []).length} tracks)`,
+    content: Buffer.from(content, "utf8").toString("base64"),
+    branch: GITHUB_BRANCH
+  };
+  if (sha) body.sha = sha;
+  const r = await fetch(buildGitHubContentsUrl(SPOTIFY_28D_JSON_PATH), {
+    method: "PUT",
+    headers: ghHeaders(),
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error("GH PUT failed " + r.status + ": " + t.slice(0, 200));
+  }
+  const d = await r.json();
+  return d && d.commit && d.commit.sha;
+}
+
 // =====================================================
 // Public artifact shape (what gets committed as reach.json).
 // =====================================================
@@ -636,9 +687,35 @@ function buildSpotifyArtifact(latest) {
   return {
     generated_at: ts,
     source: "Spotify for Artists",
+    window: "all-time",
     songs: sortedSongs,
     track_count: sortedSongs.length,
     total_spotify_streams: totalSpotifyStreams,
+    last_published_at: (latest && latest.parsed_at) || null
+  };
+}
+
+// =====================================================
+// Spotify 28-day artifact shape (committed to /spotify_songs_28d.json).
+// Same structure as the all-time artifact but tagged window:"28d".
+// Numbers can decrease as the rolling window moves, so this artifact
+// does not go through sanityCheckSpotify -- the parser just publishes
+// whatever was successfully read.
+// =====================================================
+function buildSpotify28dArtifact(latest) {
+  const ts = new Date().toISOString();
+  const songs = (latest && Array.isArray(latest.songs)) ? latest.songs : [];
+  const sortedSongs = songs
+    .slice()
+    .sort((a, b) => (Number(b.streams) || 0) - (Number(a.streams) || 0));
+  const totalSpotifyStreams = sortedSongs.reduce((sum, s) => sum + (Number(s.streams) || 0), 0);
+  return {
+    generated_at: ts,
+    source: "Spotify for Artists",
+    window: "28d",
+    songs: sortedSongs,
+    track_count: sortedSongs.length,
+    total_spotify_streams_28d: totalSpotifyStreams,
     last_published_at: (latest && latest.parsed_at) || null
   };
 }
@@ -751,6 +828,9 @@ exports.handler = async (event = {}) => {
   const spotifyParses = envelopes
     .filter((e) => e && e.type === "spotify_songs")
     .map((e) => e.data);
+  const spotify28dParses = envelopes
+    .filter((e) => e && e.type === "spotify_songs_28d")
+    .map((e) => e.data);
   const unknownCount = envelopes.filter((e) => !e || e.type === "unknown").length;
 
   const result = {
@@ -759,7 +839,8 @@ exports.handler = async (event = {}) => {
     per_image: envelopes,
     unknown_count: unknownCount,
     reach: null,
-    spotify: null
+    spotify: null,
+    spotify_28d: null
   };
 
   // ---- Reach (DistroKid) pipeline -----------------------------
@@ -903,7 +984,45 @@ exports.handler = async (event = {}) => {
     }
   }
 
-  if (!reachParses.length && !spotifyParses.length) {
+  // ---- Spotify 28-day songs pipeline --------------------------
+  // Parallel to the all-time pipeline but with no sanity check (28d
+  // numbers can legitimately decrease as the window rolls forward).
+  if (spotify28dParses.length) {
+    const parsed28d = mergeSpotifyParses(spotify28dParses);
+    if (!parsed28d || !parsed28d.songs.length) {
+      result.spotify_28d = { published: false, review_flag: "empty_parse", review_detail: "no songs read from 28d screenshot" };
+    } else {
+      console.log(JSON.stringify({
+        stage: "merged-spotify-28d-parse",
+        song_count: parsed28d.songs.length,
+        top_song: parsed28d.songs[0] && parsed28d.songs[0].title,
+        top_streams: parsed28d.songs[0] && parsed28d.songs[0].streams
+      }));
+
+      const sRecord28d = {
+        record_id: newRecordId(),
+        record_kind: "spotify_songs_28d",
+        parsed_at: ts,
+        songs: parsed28d.songs,
+        published: true
+      };
+      try { await writeRecord(sRecord28d); }
+      catch (err) {
+        console.error(JSON.stringify({ stage: "write-spotify-28d-published-failed", error: err && err.message }));
+        return reply(500, { error: "dynamo_write_failed_spotify_28d" });
+      }
+      let s28CommitSha = null;
+      try {
+        const artifact = buildSpotify28dArtifact(sRecord28d);
+        s28CommitSha = await commitSpotify28dJson(artifact);
+      } catch (err) {
+        console.error(JSON.stringify({ stage: "commit-spotify-28d-failed", error: err && err.message }));
+      }
+      result.spotify_28d = { published: true, parsed: parsed28d, record: sRecord28d, commit_sha: s28CommitSha };
+    }
+  }
+
+  if (!reachParses.length && !spotifyParses.length && !spotify28dParses.length) {
     result.ok = false;
     result.error = "no_recognized_screens";
     result.detail = "none of the uploaded screenshots matched a known type";
@@ -930,5 +1049,6 @@ module.exports = {
   preservedField,
   buildReachArtifact,
   buildSpotifyArtifact,
+  buildSpotify28dArtifact,
   SANITY_CEILING
 };
