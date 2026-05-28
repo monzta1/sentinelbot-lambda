@@ -191,6 +191,29 @@ function assertEqual(actual, expected, label) {
   assertEqual(artifact.traffic_sources_30d, [], "artifact: missing traffic_sources_30d defaults to []");
 }
 
+// --- canonicalizeForCompare: strips generated_at, stable JSON ---
+// This is the no-op-commit-skip mechanism: two artifacts that differ
+// only in their timestamp should compare equal so we don't churn git.
+{
+  const a = JSON.stringify({ generated_at: "2026-05-27T03:35:00.000Z", foo: 1, bar: [1, 2] });
+  const b = JSON.stringify({ generated_at: "2026-05-27T09:35:00.000Z", foo: 1, bar: [1, 2] });
+  assertEqual(pub.canonicalizeForCompare(a), pub.canonicalizeForCompare(b),
+    "canonicalize: timestamp-only differences compare equal");
+
+  const c = JSON.stringify({ generated_at: "2026-05-27T03:35:00.000Z", foo: 1, bar: [1, 2] });
+  const d = JSON.stringify({ generated_at: "2026-05-27T09:35:00.000Z", foo: 2, bar: [1, 2] });
+  assert(pub.canonicalizeForCompare(c) !== pub.canonicalizeForCompare(d),
+    "canonicalize: real value change is detected");
+
+  assertEqual(pub.canonicalizeForCompare(""), null, "canonicalize: empty input -> null");
+  assertEqual(pub.canonicalizeForCompare(null), null, "canonicalize: null input -> null");
+  assertEqual(pub.canonicalizeForCompare("{not json"), null, "canonicalize: invalid JSON -> null");
+
+  // An artifact without generated_at still works (no-op delete is fine).
+  const noTs = JSON.stringify({ foo: 1 });
+  assert(pub.canonicalizeForCompare(noTs) !== null, "canonicalize: missing generated_at still canonicalizes");
+}
+
 console.log("\n=========================================");
 console.log(`YouTube-stats-publisher tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -22,9 +22,17 @@
    Output: youtube_stats.json committed to the website repo. The
    /reach page fetches that file and renders the YouTube section.
 
-   Cron: EventBridge rate(6 hours) -> a fresh artifact four times
-   per day. YouTube Analytics has a ~48h reporting lag; refreshing
-   faster than that buys nothing.
+   Cron: EventBridge cron(35 3,21 * * ? *) -> twice daily at
+   03:35 and 21:35 UTC. Historical analysis showed those are the
+   two windows where YouTube actually has new data for this channel;
+   09:35 and 15:35 UTC runs were always byte-identical (US asleep /
+   early morning, no fresh activity to report).
+
+   No-op safety net: before committing we read the current
+   committed JSON, strip generated_at, and compare canonical forms.
+   If nothing material changed we log "no-op" and skip the PUT,
+   keeping git history clean even if YouTube's refresh cadence
+   shifts.
 
    YouTube data NEVER blends with the DistroKid reach total or the
    Spotify per-song count. It is its own labeled source artifact.
@@ -549,27 +557,64 @@ async function githubRequestWithRetry(url, options = {}, context = {}) {
   throw lastError;
 }
 
-async function readExistingSha() {
+async function readExistingFile() {
   const url = `${buildGitHubContentsUrl(YOUTUBE_JSON_PATH)}?ref=${encodeURIComponent(GITHUB_BRANCH)}`;
   try {
     const result = await githubRequestWithRetry(url, { method: "GET" }, { path: YOUTUBE_JSON_PATH });
-    return result?.data?.sha || null;
+    const sha = result?.data?.sha || null;
+    const encoded = result?.data?.content || "";
+    let content = null;
+    if (encoded) {
+      try { content = Buffer.from(encoded, "base64").toString("utf8"); } catch { content = null; }
+    }
+    return { sha, content };
   } catch (error) {
-    if (error.status === 404) return null;
+    if (error.status === 404) return { sha: null, content: null };
     throw error;
+  }
+}
+
+// Strip volatile fields (generated_at) so two artifacts that differ
+// only in their timestamp compare equal. Returns a canonical string;
+// any parse error returns null so the caller falls back to writing.
+function canonicalizeForCompare(jsonText) {
+  if (!jsonText) return null;
+  try {
+    const obj = JSON.parse(jsonText);
+    delete obj.generated_at;
+    return JSON.stringify(obj);
+  } catch {
+    return null;
   }
 }
 
 async function writeArtifactToGitHub(artifact) {
   const content = buildCanonicalArtifact(artifact);
   const contentHash = hashContent(content);
-  const sha = await readExistingSha();
+  const existing = await readExistingFile();
+
+  // Skip the commit when nothing material changed. Compare the
+  // canonical forms (sans generated_at) -- if they match, the
+  // freshness check ran successfully but YouTube didn't have new
+  // numbers, so no need to clutter git history.
+  const existingCanon = canonicalizeForCompare(existing.content);
+  const newCanon = canonicalizeForCompare(content);
+  if (existingCanon && newCanon && existingCanon === newCanon) {
+    logStage("github-put-skipped-noop", {
+      path: YOUTUBE_JSON_PATH,
+      branch: GITHUB_BRANCH,
+      contentHash,
+      reason: "canonical artifact unchanged"
+    });
+    return { contentHash, commitSha: null, skipped: true };
+  }
+
   const body = {
     message: `auto: youtube stats refresh ${artifact.generated_at.slice(0, 10)}`,
     content: encodeContentBase64(content),
     branch: GITHUB_BRANCH
   };
-  if (sha) body.sha = sha;
+  if (existing.sha) body.sha = existing.sha;
   logStage("github-put-attempt", { path: YOUTUBE_JSON_PATH, branch: GITHUB_BRANCH, contentHash });
   const result = await githubRequestWithRetry(buildGitHubContentsUrl(YOUTUBE_JSON_PATH), { method: "PUT", body }, { path: YOUTUBE_JSON_PATH });
   logStage("github-put-response", {
@@ -577,7 +622,7 @@ async function writeArtifactToGitHub(artifact) {
     status: result.status,
     commitSha: result?.data?.commit?.sha || null
   });
-  return { contentHash, commitSha: result?.data?.commit?.sha || null };
+  return { contentHash, commitSha: result?.data?.commit?.sha || null, skipped: false };
 }
 
 // ============================================================
@@ -642,12 +687,13 @@ exports.handler = async (event = {}) => {
       dailyViewsPoints: dailyViews.length,
       trafficSources: trafficSources.length,
       commitSha: writeResult.commitSha,
+      skipped: writeResult.skipped === true,
       elapsedMs: Date.now() - startedAt
     });
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ ok: true, dryRun: false, commitSha: writeResult.commitSha })
+      body: JSON.stringify({ ok: true, dryRun: false, commitSha: writeResult.commitSha, skipped: writeResult.skipped === true })
     };
   } catch (error) {
     logStage("youtube-stats-failed", { error: error.message, elapsedMs: Date.now() - startedAt });
@@ -663,6 +709,7 @@ module.exports = {
   decorateCountry,
   buildYouTubeArtifact,
   buildCanonicalArtifact,
+  canonicalizeForCompare,
   firstRowMetric,
   hashContent,
   labelForTrafficSource,
