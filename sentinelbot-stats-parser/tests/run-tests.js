@@ -410,6 +410,79 @@ assertEqual(pub.mergeSpotifyParses(null), null, "mergeSpotify: null -> null");
   assertEqual(live28d.data.songs[0].streams, 12, "envelope: 28d streams isolated");
 }
 
+// --- canonicalizeSpotifyWindow: maps variants and defaults to all-time ---
+{
+  assertEqual(pub.canonicalizeSpotifyWindow("all-time"), "all-time", "spotifyWindow: all-time passes through");
+  assertEqual(pub.canonicalizeSpotifyWindow("All-time"), "all-time", "spotifyWindow: capitalization normalized");
+  assertEqual(pub.canonicalizeSpotifyWindow("last-12-months"), "last-12-months", "spotifyWindow: last-12-months passes through");
+  assertEqual(pub.canonicalizeSpotifyWindow("Last 12 months"), "last-12-months", "spotifyWindow: spaces normalized");
+  assertEqual(pub.canonicalizeSpotifyWindow("12 months"), "last-12-months", "spotifyWindow: '12 months' variant");
+  assertEqual(pub.canonicalizeSpotifyWindow("Past 12 months"), "last-12-months", "spotifyWindow: 'past 12 months' variant");
+  assertEqual(pub.canonicalizeSpotifyWindow(""), "all-time", "spotifyWindow: empty defaults to all-time");
+  assertEqual(pub.canonicalizeSpotifyWindow(null), "all-time", "spotifyWindow: null defaults to all-time");
+  assertEqual(pub.canonicalizeSpotifyWindow("garbage"), "all-time", "spotifyWindow: unknown defaults to all-time");
+}
+
+// --- normalizeSpotifyData carries window (defaults to all-time) ---
+{
+  const a = pub.normalizeSpotifyData({ songs: [{ title: "Q", streams: 100 }] });
+  assertEqual(a.window, "all-time", "normalizeSpotify: missing window defaults to all-time");
+  const b = pub.normalizeSpotifyData({ window: "last-12-months", songs: [{ title: "Q", streams: 100 }] });
+  assertEqual(b.window, "last-12-months", "normalizeSpotify: last-12-months preserved");
+  const c = pub.normalizeSpotifyData({ window: "Last 12 months", songs: [{ title: "Q", streams: 100 }] });
+  assertEqual(c.window, "last-12-months", "normalizeSpotify: human-readable window canonicalized");
+}
+
+// --- mergeSpotifyParses propagates window (12m wins if any parse carries it) ---
+{
+  const a = { window: "all-time", songs: [{ title: "Q", streams: 100 }] };
+  const b = { window: "all-time", songs: [{ title: "R", streams: 50 }] };
+  const both = pub.mergeSpotifyParses([a, b]);
+  assertEqual(both.window, "all-time", "mergeSpotify: all parses all-time -> all-time");
+
+  const c = { window: "last-12-months", songs: [{ title: "Q", streams: 800 }] };
+  const d = { window: "last-12-months", songs: [{ title: "R", streams: 60 }] };
+  const twelve = pub.mergeSpotifyParses([c, d]);
+  assertEqual(twelve.window, "last-12-months", "mergeSpotify: all parses 12m -> 12m");
+
+  const mixed = pub.mergeSpotifyParses([a, c]);
+  assertEqual(mixed.window, "last-12-months", "mergeSpotify: mixed picks 12m (the non-default)");
+}
+
+// --- buildSpotifyArtifact reads window from record (legacy = all-time) ---
+{
+  const legacy = pub.buildSpotifyArtifact({
+    parsed_at: "2026-05-24T18:00:00Z",
+    songs: [{ title: "Q", streams: 800 }]
+  });
+  assertEqual(legacy.window, "all-time", "spotifyArtifact: legacy record without window -> all-time");
+
+  const twelve = pub.buildSpotifyArtifact({
+    parsed_at: "2026-06-06T12:00:00Z",
+    window: "last-12-months",
+    songs: [{ title: "Silent As Night", streams: 4562 }]
+  });
+  assertEqual(twelve.window, "last-12-months", "spotifyArtifact: 12m record -> 12m");
+  assertEqual(twelve.total_spotify_streams, 4562, "spotifyArtifact: 12m total uses lifetime field name (frontend reads same key)");
+}
+
+// --- envelope round-trip: Last 12 months screenshot end-to-end ---
+{
+  const env = pub.normalizeEnvelope({
+    type: "spotify_songs",
+    data: {
+      window: "Last 12 months",
+      songs: [{ title: "Silent As Night", streams: 4562 }, { title: "Quake", streams: 720 }]
+    }
+  });
+  assertEqual(env.type, "spotify_songs", "12m envelope: routes to spotify_songs (same artifact file)");
+  assertEqual(env.data.window, "last-12-months", "12m envelope: window canonicalized");
+  const merged = pub.mergeSpotifyParses([env.data]);
+  const artifact = pub.buildSpotifyArtifact({ parsed_at: "2026-06-06T12:00:00Z", ...merged });
+  assertEqual(artifact.window, "last-12-months", "12m envelope: artifact tagged last-12-months");
+  assertEqual(artifact.songs[0].title, "Silent As Night", "12m envelope: songs sorted desc");
+}
+
 // --- SANITY_CEILING export sanity (default 2500 unless env overrides) ---
 assert(typeof pub.SANITY_CEILING === "number" && pub.SANITY_CEILING >= 100, "SANITY_CEILING is a positive number");
 

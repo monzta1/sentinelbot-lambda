@@ -199,14 +199,17 @@ async function parseScreenshot(imageBase64, mimeType) {
     "Type B: \"distrokid_countries\"",
     "  DistroKid 'Streams by Country' list. Each row is a flag + country name + a number. Examples: 'United States 3,164', 'The Netherlands 218'.",
     "",
-    "Type C: \"spotify_songs\"  (Spotify for Artists Top Tracks, ALL-TIME)",
-    "  Tabs may read 'Songs / Releases / Playlists / Upcoming'. The window filter near the top reads 'All-time' (sometimes 'Lifetime'). A subheader may read 'Streams · All-time'. Each row is a small square cover art, the song title, and a stream count.",
+    "Type C: \"spotify_songs\"  (Spotify for Artists Top Tracks, any non-28-day window)",
+    "  Tabs may read 'Songs / Releases / Playlists / Upcoming'. The window filter near the top reads one of:",
+    "    'All-time' (sometimes 'Lifetime') -> window = \"all-time\"",
+    "    'Last 12 months' (sometimes '12 months' / 'Past 12 months') -> window = \"last-12-months\"",
+    "  A subheader may also include the window label. Each row is a small square cover art, the song title, and a stream count. Return the detected window string in the data envelope alongside the songs.",
     "",
     "Type D: \"spotify_songs_28d\"  (Spotify for Artists Top Tracks, LAST 28 DAYS)",
     "  Same layout as Type C, but the window filter near the top reads 'Last 28 days' (or '28 days' / 'Past 28 days'). The numbers will be smaller than the all-time version. If you see this label, return type 'spotify_songs_28d', NOT 'spotify_songs'.",
     "",
     "Rules:",
-    "- Inspect the time-window filter at the top of any Spotify Top Tracks screenshot before picking type C vs D. The label is the deciding signal.",
+    "- Inspect the time-window filter at the top of any Spotify Top Tracks screenshot before picking type C vs D and (for C) before picking the window string. The label is the deciding signal.",
     "- Strip ALL commas from numbers. '4,270' becomes 4270.",
     "- Numbers are integers. No decimals.",
     "- Use names exactly as displayed.",
@@ -225,7 +228,9 @@ async function parseScreenshot(imageBase64, mimeType) {
     '    "last_7": <integer>,',
     "    // For distrokid_countries:",
     '    "per_country": [ {"country": "<name>", "streams": <integer>}, ... ],',
-    "    // For spotify_songs and spotify_songs_28d (same shape, different window):",
+    "    // For spotify_songs (the window field is required, exactly \"all-time\" or \"last-12-months\"):",
+    '    "window": "all-time" | "last-12-months",',
+    "    // For spotify_songs and spotify_songs_28d (same shape):",
     '    "songs": [ {"title": "<song title>", "streams": <integer>}, ... ]',
     "  }",
     "}"
@@ -326,8 +331,19 @@ function normalizeReachData(p) {
   return out;
 }
 
+// Spotify-side window canonicalization. The model is asked to return
+// exactly "all-time" or "last-12-months" but we coerce defensively so a
+// minor variation (capitalization, missing hyphen) still routes correctly.
+// Unknown / missing values default to "all-time" since that is what every
+// legacy upload was before the 12-months path existed.
+function canonicalizeSpotifyWindow(raw) {
+  const s = String(raw || "").trim().toLowerCase().replace(/[\s_]+/g, "-");
+  if (s === "last-12-months" || s === "12-months" || s === "past-12-months") return "last-12-months";
+  return "all-time";
+}
+
 function normalizeSpotifyData(p) {
-  const out = { songs: [] };
+  const out = { songs: [], window: canonicalizeSpotifyWindow(p && p.window) };
   if (!Array.isArray(p.songs)) return out;
   out.songs = p.songs
     .map((row) => {
@@ -400,6 +416,13 @@ function mergeSpotifyParses(parses) {
   const list = Array.isArray(parses) ? parses.filter(Boolean) : [];
   if (!list.length) return null;
   const byTitle = new Map();
+  // Window: prefer the first explicit non-default value seen. All parses
+  // in a single upload batch should agree, but we tolerate one outlier by
+  // picking the first that is not the legacy "all-time" default.
+  let window = "all-time";
+  for (const p of list) {
+    if (p && p.window && p.window !== "all-time") { window = p.window; break; }
+  }
   for (const p of list) {
     if (!p || !Array.isArray(p.songs)) continue;
     for (const s of p.songs) {
@@ -414,7 +437,7 @@ function mergeSpotifyParses(parses) {
   const songs = Array.from(byTitle.entries())
     .map(([title, streams]) => ({ title, streams }))
     .sort((a, b) => b.streams - a.streams);
-  return { songs };
+  return { songs, window };
 }
 
 // =====================================================
@@ -684,10 +707,13 @@ function buildSpotifyArtifact(latest) {
     .slice()
     .sort((a, b) => (Number(b.streams) || 0) - (Number(a.streams) || 0));
   const totalSpotifyStreams = sortedSongs.reduce((sum, s) => sum + (Number(s.streams) || 0), 0);
+  // Legacy records written before the window field existed are all-time
+  // by construction. Anything else carries the window the operator picked.
+  const window = (latest && latest.window) || "all-time";
   return {
     generated_at: ts,
     source: "Spotify for Artists",
-    window: "all-time",
+    window: window,
     songs: sortedSongs,
     track_count: sortedSongs.length,
     total_spotify_streams: totalSpotifyStreams,
@@ -931,12 +957,21 @@ exports.handler = async (event = {}) => {
         top_streams: parsedSpotify.songs[0] && parsedSpotify.songs[0].streams
       }));
 
+      // sanityCheckSpotify guards against numbers going DOWN, which is
+      // only a valid invariant for all-time data. Rolling-window uploads
+      // (e.g. "Last 12 months") can legitimately decrease as old streams
+      // age out of the window, so skip the check in that case. The 28-day
+      // pipeline below already takes the same shortcut.
+      const sWindow = parsedSpotify.window || "all-time";
       let lastSpotify = null;
-      try { lastSpotify = await loadLatestSpotifyPublished(); }
-      catch (err) {
-        console.error(JSON.stringify({ stage: "load-latest-spotify-failed", error: err && err.message }));
+      let saneS = { ok: true };
+      if (sWindow === "all-time") {
+        try { lastSpotify = await loadLatestSpotifyPublished(); }
+        catch (err) {
+          console.error(JSON.stringify({ stage: "load-latest-spotify-failed", error: err && err.message }));
+        }
+        saneS = sanityCheckSpotify(parsedSpotify, lastSpotify);
       }
-      const saneS = sanityCheckSpotify(parsedSpotify, lastSpotify);
 
       if (!saneS.ok) {
         const rejected = {
@@ -944,6 +979,7 @@ exports.handler = async (event = {}) => {
           record_kind: "spotify_songs",
           parsed_at: ts,
           songs: parsedSpotify.songs,
+          window: sWindow,
           published: false,
           review_flag: saneS.reason,
           review_detail: saneS.detail
@@ -965,6 +1001,7 @@ exports.handler = async (event = {}) => {
           record_kind: "spotify_songs",
           parsed_at: ts,
           songs: parsedSpotify.songs,
+          window: sWindow,
           published: true
         };
         try { await writeRecord(sRecord); }
@@ -1039,6 +1076,7 @@ module.exports = {
   normalizeEnvelope,
   normalizeReachData,
   normalizeSpotifyData,
+  canonicalizeSpotifyWindow,
   canonicalizeCountry,
   sanityCheck,
   sanityCheckSpotify,
