@@ -204,7 +204,7 @@ assertEqual(pub.mergeParses(null), {}, "mergeParses: null -> {}");
   assertEqual(merged.total_streams, 9724, "mergeParses: max total wins across parses");
 }
 
-// --- mergeParses: longer per_country list wins ---
+// --- mergeParses: overlapping country lists union, dedupe by code, max streams ---
 {
   const small = { per_country: [{ country: "United States", code: "US", flag: "🇺🇸", streams: 100 }] };
   const big = {
@@ -215,7 +215,9 @@ assertEqual(pub.mergeParses(null), {}, "mergeParses: null -> {}");
     ]
   };
   const merged = pub.mergeParses([small, big]);
-  assertEqual(merged.per_country.length, 3, "mergeParses: longer per_country list wins");
+  assertEqual(merged.per_country.length, 3, "mergeParses: overlapping lists deduped to 3 unique countries");
+  const us = merged.per_country.find((c) => c.code === "US");
+  assertEqual(us.streams, 3164, "mergeParses: overlapping US row keeps max streams");
 }
 
 // --- mergeParses: only country screen -> total omitted (preservedField will fall back to last published) ---
@@ -481,6 +483,62 @@ assertEqual(pub.mergeSpotifyParses(null), null, "mergeSpotify: null -> null");
   const artifact = pub.buildSpotifyArtifact({ parsed_at: "2026-06-06T12:00:00Z", ...merged });
   assertEqual(artifact.window, "last-12-months", "12m envelope: artifact tagged last-12-months");
   assertEqual(artifact.songs[0].title, "Silent As Night", "12m envelope: songs sorted desc");
+}
+
+// --- multi-screenshot country list: two country screens cover different
+//     slices of one long list and get concatenated, not overwritten ---
+{
+  const screenA = {
+    per_country: [
+      { country: "United States", code: "US", flag: "🇺🇸", streams: 3164 },
+      { country: "Germany", code: "DE", flag: "🇩🇪", streams: 589 },
+      { country: "France", code: "FR", flag: "🇫🇷", streams: 580 }
+    ]
+  };
+  const screenB = {
+    per_country: [
+      { country: "Canada", code: "CA", flag: "🇨🇦", streams: 240 },
+      { country: "Sweden", code: "SE", flag: "🇸🇪", streams: 188 },
+      { country: "Japan", code: "JP", flag: "🇯🇵", streams: 91 }
+    ]
+  };
+  const merged = pub.mergeParses([screenA, screenB]);
+  assertEqual(merged.per_country.length, 6, "multi-screen countries: two slices concatenated into 6 rows");
+  const codes = merged.per_country.map((c) => c.code);
+  assert(codes.indexOf("US") >= 0 && codes.indexOf("JP") >= 0, "multi-screen countries: rows from both screens present");
+}
+
+// --- multi-screenshot country list with totals screen + scroll overlap:
+//     5 screens (totals + 3 country slices with one overlap + dup) merge
+//     into one record with the full deduped country list ---
+{
+  const totals = { total_streams: 12000, last_90: 9000, last_30: 6000, last_7: 1500 };
+  const c1 = { per_country: [
+    { country: "United States", code: "US", flag: "🇺🇸", streams: 5000 },
+    { country: "United Kingdom", code: "GB", flag: "🇬🇧", streams: 1200 }
+  ] };
+  const c2 = { per_country: [
+    { country: "United Kingdom", code: "GB", flag: "🇬🇧", streams: 1200 }, // overlap row at scroll boundary
+    { country: "Germany", code: "DE", flag: "🇩🇪", streams: 900 }
+  ] };
+  const c3 = { per_country: [
+    { country: "Brazil", code: "BR", flag: "🇧🇷", streams: 410 },
+    { country: "India", code: "IN", flag: "🇮🇳", streams: 300 }
+  ] };
+  const merged = pub.mergeParses([totals, c1, c2, c3]);
+  assertEqual(merged.total_streams, 12000, "5-screen merge: totals carried from totals screen");
+  assertEqual(merged.per_country.length, 5, "5-screen merge: overlapping GB row deduped, 5 unique countries");
+  const gb = merged.per_country.find((c) => c.code === "GB");
+  assertEqual(gb.streams, 1200, "5-screen merge: deduped GB keeps a single row");
+}
+
+// --- mergePerCountryRows: unmapped country (empty code) deduped by name ---
+{
+  const a = { per_country: [{ country: "Atlantis", code: "", flag: "", streams: 5 }] };
+  const b = { per_country: [{ country: "Atlantis", code: "", flag: "", streams: 8 }] };
+  const rows = pub.mergePerCountryRows([a, b]);
+  assertEqual(rows.length, 1, "mergePerCountryRows: unmapped country deduped by name");
+  assertEqual(rows[0].streams, 8, "mergePerCountryRows: unmapped country keeps max streams");
 }
 
 // --- SANITY_CEILING export sanity (default 2500 unless env overrides) ---

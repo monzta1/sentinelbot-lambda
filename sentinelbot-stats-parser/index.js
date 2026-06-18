@@ -373,11 +373,40 @@ function normalizeParsed(p) {
 //   - For numeric fields, take the MAX across parses that set it.
 //     DistroKid stats only increment, so if both screens happen to
 //     show a total, the higher one is the freshest.
-//   - For per_country, the longest non-empty list wins. If neither
-//     parse carries countries, omit.
+//   - For per_country, CONCATENATE the rows across every parse, then
+//     dedupe. The country list is sometimes too long to fit one
+//     screenshot, so the operator uploads several country screens that
+//     together cover the full list. Each screen carries a different
+//     slice, so we union them rather than picking one. Dedupe key is
+//     the ISO code when present, else the lowercased country name.
+//     If the same country shows up in two screenshots (overlap at the
+//     scroll boundary), keep the MAX stream count (counters only
+//     increment). If no parse carries countries, omit.
 //   - Fields no parse sets are omitted (downstream preservedField
 //     falls back to the last published value).
 // =====================================================
+function mergePerCountryRows(list) {
+  const byKey = new Map();
+  const order = [];
+  for (const p of list) {
+    if (!p || !Array.isArray(p.per_country)) continue;
+    for (const row of p.per_country) {
+      if (!row) continue;
+      const key = row.code ? "code:" + row.code : "name:" + String(row.country || "").trim().toLowerCase();
+      if (!key || key === "name:") continue;
+      const streams = Number(row.streams) || 0;
+      const cur = byKey.get(key);
+      if (cur == null) {
+        byKey.set(key, { country: row.country, code: row.code, flag: row.flag, streams });
+        order.push(key);
+      } else if (streams > cur.streams) {
+        cur.streams = streams;
+      }
+    }
+  }
+  return order.map((k) => byKey.get(k));
+}
+
 function mergeParses(parses) {
   const list = Array.isArray(parses) ? parses.filter(Boolean) : [];
   if (!list.length) return {};
@@ -394,15 +423,8 @@ function mergeParses(parses) {
     }
     if (best != null) out[field] = best;
   }
-  let bestCountries = null;
-  for (const p of list) {
-    if (p && Array.isArray(p.per_country) && p.per_country.length) {
-      if (!bestCountries || p.per_country.length > bestCountries.length) {
-        bestCountries = p.per_country;
-      }
-    }
-  }
-  if (bestCountries) out.per_country = bestCountries;
+  const mergedCountries = mergePerCountryRows(list);
+  if (mergedCountries.length) out.per_country = mergedCountries;
   return out;
 }
 
@@ -822,7 +844,7 @@ exports.handler = async (event = {}) => {
     }
   }
   if (!images.length) return reply(400, { error: "missing_image_base64" });
-  if (images.length > 4) return reply(400, { error: "too_many_images", detail: "max 4 per upload" });
+  if (images.length > 5) return reply(400, { error: "too_many_images", detail: "max 5 per upload" });
 
   let envelopes;
   try {
@@ -1081,6 +1103,7 @@ module.exports = {
   sanityCheck,
   sanityCheckSpotify,
   mergeParses,
+  mergePerCountryRows,
   mergeSpotifyParses,
   mergePerCountry,
   preservedTotal,
