@@ -20,9 +20,10 @@ function runCli(filePath, env = {}) {
   });
 }
 
-function runCliWithArgs(args, env = {}) {
+function runCliWithArgs(args, env = {}, opts = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     encoding: "utf8",
+    cwd: opts.cwd,
     env: {
       ...process.env,
       ...env
@@ -257,6 +258,78 @@ function runDropzoneScanCase() {
   assert(storedState["lyrics-only-song"], "dropzone-scan: lyrics-only song should be queued");
   assert(storedState["artwork-only-song"], "dropzone-scan: artwork-only song should be queued");
   assert(!storedState["title-only-song"], "dropzone-scan: title-only song should not be queued");
+}
+
+// Two ergonomic forms that should behave identically to `ingest -`:
+//   - `ingest` with no file arg (run from anywhere, scan default dropzone)
+//   - `ingest dropzone` (literal alias, same default scan)
+// Plus the directory-arg form:
+//   - `ingest <some-dir>` -> scan that directory for *.txt
+function runDropzoneNoArgCase() {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "shield-cli-noarg-"));
+  const stateFile = path.join(workspace, "state.json");
+  const eventFile = path.join(workspace, "events.json");
+  const dropzoneDir = path.join(workspace, "dropzone");
+  fs.mkdirSync(dropzoneDir, { recursive: true });
+  fs.writeFileSync(path.join(dropzoneDir, "song.txt"), ["#title", "No-Arg Song", "", "#lyrics", "Line 1"].join("\n"));
+
+  const result = runCliWithArgs(["ingest"], {
+    ...buildArtworkEnv(workspace),
+    SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
+    SHIELD_CLI_EVENT_STATE_FILE: eventFile,
+    SHIELD_CLI_DROPZONE_DIR: dropzoneDir
+  });
+  assert(result.error == null, "ingest-no-arg: cli execution failed");
+  const parsed = parseJson(result.stdout, "ingest-no-arg");
+  assert(parsed.status === "processed", `ingest-no-arg: expected processed but got ${parsed.status}`);
+  assert(parsed.mode === "dropzone", `ingest-no-arg: expected dropzone mode but got ${parsed.mode}`);
+  assert(parsed.scanned === 1, `ingest-no-arg: expected scanned 1 but got ${parsed.scanned}`);
+}
+
+function runDropzoneAliasCase() {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "shield-cli-alias-"));
+  const stateFile = path.join(workspace, "state.json");
+  const eventFile = path.join(workspace, "events.json");
+  const dropzoneDir = path.join(workspace, "dropzone");
+  fs.mkdirSync(dropzoneDir, { recursive: true });
+  fs.writeFileSync(path.join(dropzoneDir, "song.txt"), ["#title", "Alias Song", "", "#lyrics", "Line 1"].join("\n"));
+
+  // Run with cwd somewhere that does NOT have a ./dropzone, proving the
+  // literal word "dropzone" is treated as an alias for the default scan
+  // rather than a path resolved against cwd.
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "shield-cli-elsewhere-"));
+  const result = runCliWithArgs(["ingest", "dropzone"], {
+    ...buildArtworkEnv(workspace),
+    SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
+    SHIELD_CLI_EVENT_STATE_FILE: eventFile,
+    SHIELD_CLI_DROPZONE_DIR: dropzoneDir
+  }, { cwd: elsewhere });
+  assert(result.error == null, "ingest-dropzone-alias: cli execution failed");
+  const parsed = parseJson(result.stdout, "ingest-dropzone-alias");
+  assert(parsed.status === "processed", `ingest-dropzone-alias: expected processed but got ${parsed.status}`);
+  assert(parsed.mode === "dropzone", `ingest-dropzone-alias: expected dropzone mode but got ${parsed.mode}`);
+  assert(parsed.scanned === 1, `ingest-dropzone-alias: expected scanned 1 from default dropzone but got ${parsed.scanned}`);
+}
+
+function runDropzoneDirectoryArgCase() {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "shield-cli-dirarg-"));
+  const stateFile = path.join(workspace, "state.json");
+  const eventFile = path.join(workspace, "events.json");
+  const customDir = path.join(workspace, "custom");
+  fs.mkdirSync(customDir, { recursive: true });
+  fs.writeFileSync(path.join(customDir, "song.txt"), ["#title", "Custom Dir Song", "", "#lyrics", "Line 1"].join("\n"));
+
+  const result = runCliWithArgs(["ingest", customDir], {
+    ...buildArtworkEnv(workspace),
+    SHIELD_CLI_DYNAMO_STATE_FILE: stateFile,
+    SHIELD_CLI_EVENT_STATE_FILE: eventFile,
+    SHIELD_CLI_DROPZONE_DIR: path.join(workspace, "unused-default-dropzone")
+  });
+  assert(result.error == null, "ingest-dir-arg: cli execution failed");
+  const parsed = parseJson(result.stdout, "ingest-dir-arg");
+  assert(parsed.status === "processed", `ingest-dir-arg: expected processed but got ${parsed.status}`);
+  assert(parsed.mode === "dropzone", `ingest-dir-arg: expected dropzone mode but got ${parsed.mode}`);
+  assert(parsed.scanned === 1, `ingest-dir-arg: expected scanned 1 from custom dir but got ${parsed.scanned}`);
 }
 
 function runPartialExistingUpsertCase() {
@@ -545,6 +618,12 @@ try {
   console.log("PASS no-title");
   runDropzoneScanCase();
   console.log("PASS dropzone-scan");
+  runDropzoneNoArgCase();
+  console.log("PASS ingest-no-arg");
+  runDropzoneAliasCase();
+  console.log("PASS ingest-dropzone-alias");
+  runDropzoneDirectoryArgCase();
+  console.log("PASS ingest-directory-arg");
   runPartialExistingUpsertCase();
   console.log("PASS partial-upsert");
   runCleanReplaceCase();

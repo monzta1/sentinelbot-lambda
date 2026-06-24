@@ -20,8 +20,14 @@ const DEFAULT_SITE_JSON_PATH = process.env.SHIELD_CLI_SITE_JSON_PATH || path.res
 const helpText = `Shield Ingest CLI
 
 Usage:
-  shield ingest [-|file]
-  shield ingest
+  shield ingest                  Scan the default dropzone for *.txt
+  shield ingest dropzone         Same (alias, works from any cwd)
+  shield ingest /path/to/dir     Scan that directory for *.txt
+  shield ingest /path/to/file    Ingest a single .txt file
+  shield ingest -                Same as no-args (scan default dropzone)
+
+Default dropzone: ${DEFAULT_DROPZONE_DIR}
+Override with SHIELD_CLI_DROPZONE_DIR.
 
 Options:
   --help     Show help
@@ -212,6 +218,10 @@ function getDropzoneTargets(dropzoneDir) {
   const files = listFiles(dropzoneDir);
   const textFiles = files.filter((file) => path.extname(file).toLowerCase() === ".txt");
   return textFiles.map((file) => path.join(dropzoneDir, file));
+}
+
+function isExistingDirectory(p) {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }
 
 function parseSongFile(rawContent) {
@@ -948,10 +958,27 @@ async function persistSong(song, options = {}) {
 function main() {
   return (async () => {
     const { command, fileArg, isDryRun } = parseArgs(process.argv);
-    const shouldScanDropzone = command === "ingest" && (!fileArg || fileArg === "-");
+
+    // Resolve fileArg into a directory if possible so `shield ingest` works
+    // from anywhere. Accepted forms (all do the same thing as the no-arg
+    // scan of DEFAULT_DROPZONE_DIR, with the directory arg variant scoped
+    // to whichever directory was named):
+    //   shield ingest                  -> scan DEFAULT_DROPZONE_DIR
+    //   shield ingest -                 -> scan DEFAULT_DROPZONE_DIR
+    //   shield ingest dropzone          -> alias for the same default scan
+    //   shield ingest /any/dir          -> scan that directory (if it exists)
+    //   shield ingest /any/file.txt     -> ingest that single file (legacy)
+    const cwdResolvedArg = (fileArg && fileArg !== "-")
+      ? path.resolve(process.cwd(), fileArg)
+      : null;
+    const argIsDir = cwdResolvedArg ? isExistingDirectory(cwdResolvedArg) : false;
+    const argIsDropzoneAlias = typeof fileArg === "string" && fileArg.toLowerCase() === "dropzone";
+    const shouldScanDropzone = command === "ingest" && (!fileArg || fileArg === "-" || argIsDropzoneAlias || argIsDir);
 
     if (command !== "ingest" || shouldScanDropzone) {
-      const dropzoneDir = DEFAULT_DROPZONE_DIR;
+      // When fileArg points at an existing directory other than the literal
+      // "dropzone" alias, scan that directory. Otherwise scan the default.
+      const dropzoneDir = (argIsDir && !argIsDropzoneAlias) ? cwdResolvedArg : DEFAULT_DROPZONE_DIR;
       const targets = shouldScanDropzone ? getDropzoneTargets(dropzoneDir) : [];
 
       if (command !== "ingest") {
