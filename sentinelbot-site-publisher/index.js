@@ -499,6 +499,11 @@ function normalizeSongTableItem(item) {
     state: status || "draft",
     traceId: String(item.traceId || "").trim(),
     publishedAt: String(item.publishedAt || "").trim(),
+    // Curated records can carry an explicit videoId when the songId is
+    // a slug (shield-cli ingests). Without this passthrough the merge
+    // fallback (videoId || songId) stamps the slug into the homepage
+    // embed, which is how let-my-people-go shipped a broken player.
+    videoId: String(item.videoId || "").trim(),
     sourceUrl: String(item.youtubeUrl || item.sourceUrl || "").trim(),
     artwork,
     lyrics,

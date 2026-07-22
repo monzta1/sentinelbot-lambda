@@ -92,6 +92,33 @@ function assertEqual(actual, expected, label) {
   assertEqual(out.artwork, "", "filename (non-URL) in artwork field rejected when artworkUrl missing");
 }
 
+// --- normalizeSongTableItem: explicit videoId passes through ---
+// Curated slug-keyed records (shield-cli) can carry the YouTube id in
+// videoId. Dropping it made the merge fall back to the slug songId and
+// stamp a broken embed (the let-my-people-go homepage bug).
+{
+  const curatedReleased = {
+    songId: "let-my-people-go",
+    title: "Let My People Go",
+    status: "released",
+    videoId: "0lUJcLKIt0o",
+    sourceUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o"
+  };
+  const out = pub.normalizeSongTableItem(curatedReleased);
+  assertEqual(out.videoId, "0lUJcLKIt0o", "explicit videoId passes through normalization");
+  const view = pub.buildSongView(out, null);
+  assertEqual(view.videoId, "0lUJcLKIt0o", "buildSongView keeps the explicit videoId");
+}
+{
+  const detectorRecord = {
+    songId: "0aaaaaaaaaa",
+    title: "Detector Song",
+    status: "released"
+  };
+  const out = pub.normalizeSongTableItem(detectorRecord);
+  assertEqual(out.videoId, "", "records without videoId normalize to empty (songId fallback happens later)");
+}
+
 // --- buildSongView: song-table state wins over event-derived state ---
 {
   // Real bug: SONG_UPDATED events from shield-cli got synthesized
