@@ -7,6 +7,11 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.14.1 - August 2026
+- Cache intent fix: purpose questions no longer get the Moncy bio. "who did moncy build you for" (May 21 transcript) matched the who-is-moncy rule because it fired on any question containing both "moncy" and "who". That rule now requires an actual who-is-moncy phrasing (who is / whos / who was moncy, tell me about moncy); questions merely mentioning Moncy fall through to the LLM.
+- New cached purpose answer ("who were you built for"), routed on build/built/made/created you for, why were you built/made/created, your purpose, who do you serve, why do you exist. On-voice: the artist holds the spotlight, the bot holds the wall, Ezekiel 33:7. The route sits above the who-made-you rule so purpose phrasings beat the generic made-you substrings; plain who-made-you keeps its existing answer.
+- 12 new tests around findCachedAnswer covering bio phrasings, purpose phrasings, who-made-you regression, and the mention-only fall-through.
+
 ## v1.14.0 - August 2026
 - Deterministic YouTube link answers. An explicit video-link request ("can i have the youtube links pls", "where can i watch") now bypasses the cache and the LLM and answers straight from the shieldbearer-songs table: song names are matched against the question plus recent chat history, each match resolves to a real watch URL, and the reply closes with the channel link. Fixes the July 10 transcript where a visitor asked for YouTube links and got bare titles with no links.
 - Watch URLs come only from data on file: songId doubles as the YouTube video id for detector-ingested records (shape-validated, publishedAt required), curated slug records need an explicit youtubeUrl, anything unresolvable is dropped. No model output can invent a link on this path.

@@ -321,6 +321,34 @@ function assertEqual(actual, expected, label) {
   assertEqual(filtered, "Real answer here.", "link sentences still stripped on the meaning path");
 }
 
+// --- Cache intent matching: purpose questions vs the Moncy bio ---
+// May 21 transcript: "who did moncy build you for" got the who-is-moncy
+// bio because the old matcher fired on any question containing both
+// "moncy" and "who".
+(async () => {
+  const bio = await sb.findCachedAnswer("who is moncy");
+  assert(Boolean(bio) && bio.includes("WhitenoiZ"), "who is moncy still returns the bio");
+  assertEqual(await sb.findCachedAnswer("whos moncy"), bio, "whos moncy returns the bio");
+  assertEqual(await sb.findCachedAnswer("who is moncy abraham"), bio, "who is moncy abraham returns the bio");
+  assertEqual(await sb.findCachedAnswer("tell me about moncy"), bio, "tell me about moncy returns the bio");
+
+  const purpose = await sb.findCachedAnswer("who did moncy build you for");
+  assert(Boolean(purpose) && !purpose.includes("WhitenoiZ"), "who did moncy build you for no longer returns the bio");
+  assert(purpose.includes("mission"), "purpose answer covers the mission");
+  assertEqual(await sb.findCachedAnswer("why were you built"), purpose, "why were you built routes to purpose");
+  assertEqual(await sb.findCachedAnswer("what is your purpose"), purpose, "what is your purpose routes to purpose");
+  assertEqual(await sb.findCachedAnswer("who do you serve"), purpose, "who do you serve routes to purpose");
+
+  // Purpose beats the generic who-made-you substrings, but plain
+  // who-made-you phrasings keep their existing answer.
+  const madeYou = await sb.findCachedAnswer("who made you");
+  assert(Boolean(madeYou) && madeYou.includes("Shieldbearer Command"), "who made you keeps its answer");
+  assertEqual(await sb.findCachedAnswer("who built you"), madeYou, "who built you keeps its answer");
+
+  // Questions merely mentioning Moncy fall through to the LLM now.
+  assertEqual(await sb.findCachedAnswer("who does moncy listen to"), null, "mentioning moncy no longer hijacks unrelated questions");
+})();
+
 // Wait briefly so the async resolveIpLocation block runs before the
 // process exits. The previous test block's setImmediate equivalents
 // settle within a single tick.

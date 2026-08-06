@@ -2776,6 +2776,7 @@ const CACHED_ANSWERS = {
   "exact technical spec": 'I do not have the exact BPM, key, or time signature on file for the catalog. The session data lives in the studio. I can describe the feel of a track (heavy, mid-tempo, drop-tuned, driving) but the precise numbers are not in my record. <a href="https://shieldbearerusa.com/contact.html" target="_blank">Contact</a> if you need the figure.',
   "where can i buy merch": 'Official Shieldbearer merch: <a href="https://shop.shieldbearerusa.com" target="_blank">shop.shieldbearerusa.com</a>',
   "who is moncy": 'Moncy Abraham. Guitarist, lyricist, composer. Former lead guitarist for WhitenoiZ. India\'s first Christian metal band. Played in Scarlet Robe, opened for John Schlitt in Bangalore. 25 years in. <a href="https://shieldbearerusa.com/story.html" target="_blank">Story</a>',
+  "who were you built for": 'For the mission and for you, the visitor. Moncy builds the music. I stand watch over the questions: the songs, the Scripture behind them, the story. The artist holds the spotlight. I hold the wall. Ezekiel 33:7.',
   "is ai cheating": 'Cheating at what exactly? There is no governing body for Christian metal. No certification required to carry the name of Jesus in a song. <a href="https://shieldbearerusa.com/faq.html#faq-ai-cheating" target="_blank">FAQ</a>',
   "what is ai": 'A tool. Same as a guitar, a reverb pedal, or a DAW. What matters is what you build with it and why. Shieldbearer uses it to serve the message, not replace it. <a href="https://shieldbearerusa.com/ai-and-creativity.html" target="_blank">AI and Creativity</a>'
 };
@@ -2976,6 +2977,17 @@ async function findCachedAnswer(question) {
   if (question === "what are you" || question.includes("what are you"))
     return CACHED_ANSWERS["what are you"];
 
+  // Purpose questions ("who did moncy build you for") must beat the
+  // who-is-moncy and who-made-you rules: the keyword-pair matchers
+  // used to serve a Moncy bio for a question about the bot's mission
+  // (May 21 transcript).
+  if (question.includes("build you for") || question.includes("built you for") ||
+      question.includes("made you for") || question.includes("created you for") ||
+      question.includes("why were you built") || question.includes("why were you made") ||
+      question.includes("why were you created") || question.includes("your purpose") ||
+      question.includes("who do you serve") || question.includes("why do you exist"))
+    return CACHED_ANSWERS["who were you built for"];
+
   if (question.includes("who made you") || question.includes("who built you") || question.includes("made you"))
     return CACHED_ANSWERS["who made you"];
 
@@ -3113,7 +3125,10 @@ async function findCachedAnswer(question) {
   if (question.includes("merch") || question.includes("shirt") || question.includes("buy") || question.includes("store"))
     return CACHED_ANSWERS["where can i buy merch"];
 
-  if (question === "who is moncy" || (question.includes("moncy") && question.includes("who")))
+  // Only fire on questions actually asking who Moncy is. The old
+  // keyword pair (contains "moncy" and contains "who") hijacked any
+  // question that merely mentioned him.
+  if (/\bwho(?:'?s| is| was)? moncy\b/.test(question) || question === "moncy" || question === "moncy abraham" || question.includes("tell me about moncy"))
     return CACHED_ANSWERS["who is moncy"];
 
   if (question.includes("cheating") || (question.includes("ai") && question.includes("cheat")))
@@ -4172,6 +4187,7 @@ module.exports = {
   extractSongLinkDisplayTitle,
   resolveSongWatchUrl,
   sanitizeMeaningResponse,
+  findCachedAnswer,
   rateLimitMinuteBucket,
   normalizeQuestion,
   isResolvableIp,
