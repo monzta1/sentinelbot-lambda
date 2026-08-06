@@ -1632,6 +1632,169 @@ function buildSignalRoomAnswer(songs) {
   return blocks.join("\n\n");
 }
 
+// --- Deterministic YouTube link answers ---------------------------------
+// A visitor asking for video links must get real URLs from the songs
+// table, never model output. The meaning-path sanitizer strips link
+// sentences as a hallucination guard, which used to swallow these
+// requests entirely (July 10 transcript: "can i have the youtube links
+// pls" came back with bare titles and no links). songId doubles as the
+// YouTube video id for detector-ingested records, so watch URLs come
+// straight from data on file.
+
+const YOUTUBE_CHANNEL_URL = "https://www.youtube.com/@ShieldbearerUSA";
+const YOUTUBE_VIDEO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+const SONG_LINK_CATALOG_TTL_MS = 5 * 60 * 1000;
+const SONG_LINK_GENERIC_KEYS = new Set(["shieldbearer", "official", "video", "videos", "youtube", "music", "song", "songs", "metal", "live stream"]);
+let songLinkCatalogCache = { items: null, fetchedAt: 0 };
+
+function isYouTubeLinkRequestQuestion(question) {
+  const normalized = normalizeQuestion(question);
+  if (!normalized) return false;
+  // Other platforms keep their existing cached answers.
+  if (/\b(spotify|apple music|instagram|facebook|merch)\b/.test(normalized)) return false;
+  const asksForLink = /\b(links?|urls?)\b/.test(normalized);
+  const namesVideo = /\b(youtube|video|videos)\b/.test(normalized);
+  if (asksForLink && namesVideo) return true;
+  if (/\bwhere (can|do) i watch\b/.test(normalized)) return true;
+  return false;
+}
+
+async function loadSongLinkCatalog() {
+  const now = Date.now();
+  if (songLinkCatalogCache.items && (now - songLinkCatalogCache.fetchedAt) < SONG_LINK_CATALOG_TTL_MS) {
+    return songLinkCatalogCache.items;
+  }
+
+  const items = [];
+  let lastEvaluatedKey;
+  try {
+    do {
+      const response = await dynamo.send(new ScanCommand({
+        TableName: SONGS_TABLE_NAME,
+        ProjectionExpression: "songId, title, youtubeUrl, publishedAt, #type",
+        ExpressionAttributeNames: { "#type": "type" },
+        ExclusiveStartKey: lastEvaluatedKey
+      }));
+      items.push(...(response.Items || []));
+      lastEvaluatedKey = response.LastEvaluatedKey;
+    } while (lastEvaluatedKey);
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "song-link-catalog-scan-failed", message: error.message }));
+    return songLinkCatalogCache.items || [];
+  }
+
+  songLinkCatalogCache = { items, fetchedAt: now };
+  return items;
+}
+
+function resolveSongWatchUrl(record) {
+  const explicit = String(record?.youtubeUrl || "").trim();
+  if (/^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(explicit)) return explicit;
+  // Detector-ingested records carry the YouTube video id as songId.
+  // Curated slug records (shield-cli ingests) fail the id shape test
+  // and are dropped unless they set youtubeUrl explicitly.
+  const songId = String(record?.songId || "").trim();
+  if (YOUTUBE_VIDEO_ID_PATTERN.test(songId) && String(record?.publishedAt || "").trim()) {
+    return `https://www.youtube.com/watch?v=${songId}`;
+  }
+  return "";
+}
+
+function extractSongLinkDisplayTitle(title) {
+  const segments = String(title || "")
+    .split(/\s*[|()[\]]\s*|\s+[–—-]\s+/)
+    .map((segment) => segment
+      .replace(/[^\p{L}\p{N}\s'’!,.:&-]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim())
+    .filter(Boolean);
+
+  const junk = /^(shieldbearer|official\b.*|christian\b.*|lyric video|metal\b.*|.*\balbum\b.*|#?shorts?|heavy\b.*|new album era)$/i;
+  const segment = segments.find((candidate) => !junk.test(candidate));
+  if (!segment) return "";
+  // Title-case all-caps titles so SENTINELS renders as Sentinels.
+  return segment === segment.toUpperCase() ? formatSongDisplayTitle(segment) : segment;
+}
+
+function scoreSongLinkRecord(record) {
+  const title = String(record?.title || "");
+  let score = 0;
+  if (String(record?.type || "") === "official_release") score += 4;
+  if (/official/i.test(title)) score += 2;
+  if (/\b(lyric video|official video|official audio|official song release)\b/i.test(title)) score += 1;
+  if (/#?shorts?\b/i.test(title)) score -= 6;
+  if (/\b(live stream|subscriber count|playthrough|guitar cover|tribute short)\b/i.test(title)) score -= 3;
+  return score;
+}
+
+function buildSongLinkGroups(catalogItems) {
+  const groups = new Map();
+  for (const record of Array.isArray(catalogItems) ? catalogItems : []) {
+    const displayTitle = extractSongLinkDisplayTitle(record?.title);
+    const key = normalizeReleaseTitle(displayTitle);
+    if (!displayTitle || key.length < 4 || SONG_LINK_GENERIC_KEYS.has(key)) continue;
+    const watchUrl = resolveSongWatchUrl(record);
+    if (!watchUrl) continue;
+
+    const candidate = {
+      key,
+      displayTitle,
+      watchUrl,
+      score: scoreSongLinkRecord(record),
+      publishedAt: String(record?.publishedAt || "")
+    };
+    const existing = groups.get(key);
+    // Best score wins; ties go to the earliest upload since the main
+    // release precedes its shorts and cutdowns.
+    if (!existing ||
+        candidate.score > existing.score ||
+        (candidate.score === existing.score && candidate.publishedAt && (!existing.publishedAt || candidate.publishedAt < existing.publishedAt))) {
+      groups.set(key, candidate);
+    }
+  }
+  return Array.from(groups.values());
+}
+
+function matchSongLinksInText(groups, conversationText) {
+  const normalizedText = ` ${normalizeReleaseTitle(conversationText)} `;
+  const matches = [];
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const position = normalizedText.indexOf(` ${group.key} `);
+    if (position >= 0) matches.push({ ...group, position });
+  }
+  matches.sort((a, b) => a.position - b.position);
+  return matches.slice(0, 6);
+}
+
+function formatYouTubeLinkAnswer(matches) {
+  const channelLink = `<a href="${YOUTUBE_CHANNEL_URL}" target="_blank">YouTube channel</a>`;
+  if (!Array.isArray(matches) || matches.length === 0) {
+    return [
+      `Every video is on the ${channelLink}.`,
+      "Name a song and I will hand you the direct link."
+    ].join("\n");
+  }
+
+  const lines = matches.map((match) => `<a href="${match.watchUrl}" target="_blank">${match.displayTitle}</a>`);
+  lines.push(`Full catalog: ${channelLink}`);
+  return lines.join("\n");
+}
+
+async function resolveYouTubeLinkAnswer(question, history) {
+  const catalog = await loadSongLinkCatalog();
+  const groups = buildSongLinkGroups(catalog);
+  const recentHistory = (Array.isArray(history) ? history : [])
+    .slice(-6)
+    .map((entry) => String(entry?.content || ""))
+    .join("\n");
+  const matches = matchSongLinksInText(groups, `${question}\n${recentHistory}`);
+  return {
+    answer: formatYouTubeLinkAnswer(matches),
+    source: matches.length > 0 ? "deterministic-youtube-links" : "deterministic-youtube-links-channel",
+    lookupMode: matches.length > 0 ? "youtube-links" : "youtube-links-channel"
+  };
+}
+
 function isSongMeaningQuestion(question) {
   const normalized = normalizeQuestion(question);
   return normalized.includes("what is") ||
@@ -3389,13 +3552,20 @@ function sanitizeMeaningResponse(answer) {
   const text = String(answer || "")
     .replace(/<a\b[^>]*>(.*?)<\/a>/gi, "$1")
     .replace(/<[^>]+>/g, "")
-    .replace(/\s+/g, " ")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+/g, " ")
     .trim();
 
   if (!text) return "";
 
+  // Split into lines before sentences so list-style answers keep their
+  // breaks. Collapsing all whitespace first used to mash song titles
+  // on separate lines into one run-on string.
   const sentences = text
-    .split(/(?<=[.!?])\s+/)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .flatMap((line) => line.split(/(?<=[.!?])\s+/))
     .map((sentence) => sentence.trim())
     .filter(Boolean)
     .filter((sentence) => !/(spotify|youtube|listen on|watch on|dossier|link)/i.test(sentence))
@@ -3406,7 +3576,7 @@ function sanitizeMeaningResponse(answer) {
   }
 
   return text
-    .split(/\r?\n+/)
+    .split(/\n+/)
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(0, 5)
@@ -3773,11 +3943,21 @@ exports.handler = async (event) => {
     // hijacked by identity-style cached answers that match on prefixes
     // like "what are you".
     const upcomingIntent = isUpcomingQuestion(question);
-    const cachedAnswer = upcomingIntent ? null : await findCachedAnswer(question);
+    // Explicit video-link requests bypass the cache too: the answer
+    // must carry real URLs from the songs table, and neither cached
+    // prose nor the meaning path (whose sanitizer strips link
+    // sentences) can deliver that.
+    const youtubeLinkIntent = !upcomingIntent && isYouTubeLinkRequestQuestion(question);
+    const cachedAnswer = upcomingIntent || youtubeLinkIntent ? null : await findCachedAnswer(question);
     if (cachedAnswer) {
       answer = cachedAnswer;
       source = "app-cache-hit";
       lookupMode = "cache-hit";
+    } else if (youtubeLinkIntent) {
+      const linkResult = await resolveYouTubeLinkAnswer(question, history);
+      answer = linkResult.answer;
+      source = linkResult.source;
+      lookupMode = linkResult.lookupMode;
     } else if (upcomingIntent) {
       // Signal Room handler: pull coming_soon records and answer
       // deterministically from the data. Bypassing Claude here is
@@ -3985,6 +4165,13 @@ module.exports = {
   isUpcomingQuestion,
   buildSignalRoomAnswer,
   buildSignalRoomSystemBlock,
+  isYouTubeLinkRequestQuestion,
+  buildSongLinkGroups,
+  matchSongLinksInText,
+  formatYouTubeLinkAnswer,
+  extractSongLinkDisplayTitle,
+  resolveSongWatchUrl,
+  sanitizeMeaningResponse,
   rateLimitMinuteBucket,
   normalizeQuestion,
   isResolvableIp,

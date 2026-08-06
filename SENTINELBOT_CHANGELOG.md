@@ -7,6 +7,13 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.14.0 - August 2026
+- Deterministic YouTube link answers. An explicit video-link request ("can i have the youtube links pls", "where can i watch") now bypasses the cache and the LLM and answers straight from the shieldbearer-songs table: song names are matched against the question plus recent chat history, each match resolves to a real watch URL, and the reply closes with the channel link. Fixes the July 10 transcript where a visitor asked for YouTube links and got bare titles with no links.
+- Watch URLs come only from data on file: songId doubles as the YouTube video id for detector-ingested records (shape-validated, publishedAt required), curated slug records need an explicit youtubeUrl, anything unresolvable is dropped. No model output can invent a link on this path.
+- Main-upload selection per song: official_release type and official or lyric-video titles score up, shorts and live streams score down, ties go to the earliest upload. The three replayed links (Celestial Shield, Ruler of the Storm, Galilean) were verified against live YouTube oembed.
+- sanitizeMeaningResponse now preserves line breaks. It used to collapse all whitespace before sentence-splitting, which mashed multi-line answers into run-on text ("Galilean Ruler of the Storm Celestial Shield"). Lines split first, then sentences within each line; the link-stripping hallucination guard stays for the meaning path.
+- 24 new tests: link-intent recognition and rejection, group building (short vs main upload, curated slug fallback via youtubeUrl, unresolvable records dropped), mention-order matching from mashed run-on text, answer formatting, channel-link fallback, and the sanitizer line-break fix.
+
 ## v1.13.1 - July 2026
 - Site-publisher fix: normalizeSongTableItem now passes an explicit videoId through from the songs table. Curated slug-keyed records (shield-cli ingests) could never carry a YouTube id, so the merge fallback (videoId || songId) stamped the slug into the homepage embed URL. This is how Let My People Go shipped a broken player on the homepage: its curated record had songId let-my-people-go and no videoId path, while the real video (0lUJcLKIt0o) sat in the release event and youtube_stats all along.
 - Operator data repair paired with this: set videoId and sourceUrl on the let-my-people-go record in shieldbearer-songs. Two focused tests added (explicit videoId passthrough incl. buildSongView, and empty default for detector records).

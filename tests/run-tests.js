@@ -252,6 +252,75 @@ function assertEqual(actual, expected, label) {
   assertEqual(item.location, null, "buildLogItem location defaults to null when not provided");
 }
 
+// --- YouTube link intent: explicit video-link requests ---
+{
+  const should_match = [
+    "can i have the youtube links pls",
+    "youtube link please",
+    "can you give me the video links",
+    "link to the video",
+    "whats the url of the youtube video",
+    "where can i watch",
+    "where do i watch your videos"
+  ];
+  for (const q of should_match) {
+    assert(sb.isYouTubeLinkRequestQuestion(q) === true, `recognizes youtube link intent: '${q}'`);
+  }
+
+  const should_not_match = [
+    "spotify link please",
+    "what is galilean about",
+    "do you have a youtube channel",
+    "links pls",
+    "can i watch you live",
+    "whats the merch link"
+  ];
+  for (const q of should_not_match) {
+    assert(sb.isYouTubeLinkRequestQuestion(q) === false, `rejects non-youtube-link intent: '${q}'`);
+  }
+}
+
+// --- Song link groups: pick the main upload, derive real watch URLs ---
+{
+  const catalog = [
+    { songId: "AAAAAAAAAA1", title: "Celestial Shield (Lyric Video) – Shieldbearer | Christian Metal | Israel, Prophecy & Warfare", type: "official_release", publishedAt: "2025-07-15T00:00:00Z", youtubeUrl: "" },
+    { songId: "BBBBBBBBBB2", title: "Celestial Shield - Shieldbearer #shorts", type: "official_release", publishedAt: "2025-07-16T00:00:00Z", youtubeUrl: "" },
+    { songId: "CCCCCCCCCC3", title: "Ruler of the Storm – Shieldbearer (Official Lyric Video | Christian Metal Anthem)", type: "official_release", publishedAt: "2025-05-16T00:00:00Z", youtubeUrl: "" },
+    { songId: "DDDDDDDDDD4", title: "Shieldbearer | GALILEAN", type: "official_release", publishedAt: "2026-01-23T00:00:00Z", youtubeUrl: "" },
+    { songId: "let-my-people-go", title: "Let My People Go", type: "official_release", publishedAt: "", youtubeUrl: "https://www.youtube.com/watch?v=0lUJcLKIt0o" },
+    { songId: "some-slug", title: "Curated Song Without Video", type: "official_release", publishedAt: "", youtubeUrl: "" }
+  ];
+  const groups = sb.buildSongLinkGroups(catalog);
+  const byKey = Object.fromEntries(groups.map((g) => [g.key, g]));
+
+  assertEqual(byKey["celestial shield"]?.watchUrl, "https://www.youtube.com/watch?v=AAAAAAAAAA1", "main upload beats the short for the same song");
+  assertEqual(byKey["galilean"]?.displayTitle, "Galilean", "all-caps title renders title-cased");
+  assertEqual(byKey["let my people go"]?.watchUrl, "https://www.youtube.com/watch?v=0lUJcLKIt0o", "explicit youtubeUrl wins for curated slug records");
+  assert(!byKey["curated song without video"], "curated record with no resolvable URL is dropped");
+
+  // The July 10 failure: titles mentioned in a prior bot answer must
+  // resolve to direct links, even from mashed run-on text.
+  const matches = sb.matchSongLinksInText(groups, "can i have the youtube links pls\nGalilean Ruler of the Storm Celestial Shield All three hit different angles of the same mission.");
+  assertEqual(matches.map((m) => m.key), ["galilean", "ruler of the storm", "celestial shield"], "matches songs from conversation text in mention order");
+
+  const answer = sb.formatYouTubeLinkAnswer(matches);
+  assert(answer.includes('href="https://www.youtube.com/watch?v=DDDDDDDDDD4"'), "answer carries the Galilean watch URL");
+  assert(answer.includes('href="https://www.youtube.com/watch?v=CCCCCCCCCC3"'), "answer carries the Ruler of the Storm watch URL");
+  assert(answer.includes("youtube.com/@ShieldbearerUSA"), "answer closes with the channel link");
+
+  const fallback = sb.formatYouTubeLinkAnswer([]);
+  assert(fallback.includes("youtube.com/@ShieldbearerUSA"), "no-match fallback still hands over the channel link");
+}
+
+// --- sanitizeMeaningResponse: keep line structure, strip links ---
+{
+  const mashed = sb.sanitizeMeaningResponse("Galilean\nRuler of the Storm\nCelestial Shield\nAll three hit different angles of the same mission.\nCrank them up.");
+  assertEqual(mashed, "Galilean\nRuler of the Storm\nCelestial Shield\nAll three hit different angles of the same mission.\nCrank them up.", "titles on separate lines stay on separate lines");
+
+  const filtered = sb.sanitizeMeaningResponse('Real answer here. Listen on <a href="https://example.com">Spotify</a>.');
+  assertEqual(filtered, "Real answer here.", "link sentences still stripped on the meaning path");
+}
+
 // Wait briefly so the async resolveIpLocation block runs before the
 // process exits. The previous test block's setImmediate equivalents
 // settle within a single tick.
