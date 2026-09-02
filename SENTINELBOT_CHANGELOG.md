@@ -7,6 +7,20 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.14.3 - September 2026
+- A transient Anthropic 529 reached a fan verbatim as "Signal lost. Try
+  again." on "whats the latest release". callAnthropic now retries up to
+  twice on 429/5xx with a short backoff before giving up; non-retryable
+  errors still throw immediately. Lambda timeout raised 15s to 30s so a
+  retried call is never killed mid-flight.
+- Default max_tokens raised 300 to 700. The old ceiling amputated real
+  answers mid-sentence ("why does god allow suffering" ended at "God's
+  response wasn't a formula"). The prompt keeps answers short; the ceiling
+  is for runaway output, never for cutting a thought in half.
+- Prompt (DynamoDB, both items): booking and show inquiries now point to
+  the /gigs page and its inquiry form instead of a vague Contact wave, with
+  the worship-and-metal framing on file.
+
 ## v1.14.2 - September 2026
 - "what is tonecommand" no longer gets "outside my watch". ToneCommand is
   the mission's own software and was missing from the prompt's in-scope

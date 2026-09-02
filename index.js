@@ -3773,7 +3773,11 @@ async function callAnthropic(question, history, extraContext = null, options = {
     });
   }
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  // A 529 Overloaded reached a fan verbatim as "Signal lost. Try again."
+  // (2026-09-02, "whats the latest release"). Transient upstream errors are
+  // a when, never an if; two bounded retries with a short backoff answer
+  // the question instead. Non-retryable statuses still throw immediately.
+  const doFetch = () => fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -3782,7 +3786,11 @@ async function callAnthropic(question, history, extraContext = null, options = {
     },
     body: JSON.stringify({
       model,
-      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 300,
+      // 300 amputated real answers mid-sentence ("why does god allow
+      // suffering" ended at "God's response wasn't a formula", 2026-09-02).
+      // The prompt keeps answers short; the ceiling exists to stop runaway
+      // output, never to cut a thought in half.
+      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 700,
       system: systemBlocks,
       messages: [
         ...history.slice(-10),
@@ -3791,10 +3799,17 @@ async function callAnthropic(question, history, extraContext = null, options = {
     })
   });
 
-  const data = await res.json();
-
-  if (!res.ok) {
-    throw new Error(`Anthropic error ${res.status}: ${JSON.stringify(data)}`);
+  let res;
+  let data;
+  for (let attempt = 0; ; attempt++) {
+    res = await doFetch();
+    data = await res.json();
+    if (res.ok) break;
+    const retryable = res.status === 429 || res.status >= 500 || res.status === 529;
+    if (!retryable || attempt >= 2) {
+      throw new Error(`Anthropic error ${res.status}: ${JSON.stringify(data)}`);
+    }
+    await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
   }
 
   let output = data?.content?.[0]?.text || "Signal lost. Try again.";
