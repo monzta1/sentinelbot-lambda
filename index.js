@@ -3790,7 +3790,7 @@ async function callAnthropic(question, history, extraContext = null, options = {
       // suffering" ended at "God's response wasn't a formula", 2026-09-02).
       // The prompt keeps answers short; the ceiling exists to stop runaway
       // output, never to cut a thought in half.
-      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 700,
+      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 1024,
       system: systemBlocks,
       messages: [
         ...history.slice(-10),
@@ -3812,7 +3812,13 @@ async function callAnthropic(question, history, extraContext = null, options = {
     await new Promise((r) => setTimeout(r, 700 * (attempt + 1)));
   }
 
-  let output = data?.content?.[0]?.text || "Signal lost. Try again.";
+  // The first block is not always text: models with adaptive thinking on
+  // by default (Sonnet 5 and up) lead with a thinking block whose text is
+  // empty, and content[0].text then reads undefined. Every answer became
+  // "Signal lost. Try again." for as long as that assumption stood
+  // (2026-09-02). Take the first TEXT block, wherever it sits.
+  let output = data?.content?.find((b) => b?.type === "text")?.text
+    || "Signal lost. Try again.";
 
   // Final safety net: if the model produced text that overlaps
   // verbatim with any do-not-answer post body, hard-replace with

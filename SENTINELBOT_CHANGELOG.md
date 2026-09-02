@@ -7,6 +7,20 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.15.0 - September 2026
+- SentinelBot answers on Claude Sonnet 5 (was Haiku 4.5), set via the
+  ANTHROPIC_FALLBACK_MODEL env var. The 43k-token system prompt was
+  drowning the small model; the operator asked for really smart and on
+  point, and the model is the lever. Cost shape: roughly 9 cents per
+  cold question at current input pricing, under 1 cent when the prompt
+  cache is warm; Anthropic auto-reload is off, so the downside is capped.
+- Fixed the assumption that broke every answer the moment the model
+  changed: content[0] is not always a text block. Sonnet 5 thinks by
+  default and leads with a thinking block whose text is empty, so
+  content[0].text read undefined and every reply became "Signal lost.
+  Try again." The first TEXT block is taken now, wherever it sits.
+- Default max_tokens 700 to 1024: thinking tokens share the ceiling.
+
 ## v1.14.3 - September 2026
 - A transient Anthropic 529 reached a fan verbatim as "Signal lost. Try
   again." on "whats the latest release". callAnthropic now retries up to
