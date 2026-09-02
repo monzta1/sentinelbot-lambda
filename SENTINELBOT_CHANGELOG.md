@@ -7,6 +7,27 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.16.0 - September 2026
+- Retrieval instead of recitation. The system prompt re-sent 145KB of
+  per-video deep material (96 video records) with every question; that
+  material now lives in knowledge:video:<id> DynamoDB rows and only the
+  rows matching the question ride along, injected as a system block through
+  the same machinery the Signal Room and band-voice blocks already use. The
+  always-on prompt (config:system-prompt-lean, opted into via the
+  SYSTEM_PROMPT_KEY env var) keeps the base rules plus a one-line-per-video
+  index, about 10k tokens instead of 43k: a cold Sonnet 5 question drops
+  from roughly 9 cents to about 2. Rollback is deleting the env var; the
+  old monolith item is untouched.
+- scripts/build-lean-prompt.js builds the lean item, the video index row,
+  and the 96 knowledge rows from the monolith, idempotently.
+- Raised the Haiku-era per-intent output caps (120, 140, 800, 1000) to
+  2000: adaptive thinking spends from the same ceiling, and those caps
+  were amputating answers regardless of the default.
+- 11 new tests: the retrieval matcher (right rows, no stowaways on general
+  questions, boilerplate words match nothing) and the splitter (records
+  anchor on trailing timestamps, pipes in titles survive, deep material
+  stays out of the always-on prompt).
+
 ## v1.15.1 - September 2026
 - Default max_tokens 1024 to 4000. Adaptive thinking spends from the same
   ceiling, and a hard question thinks hard: a worship-challenge reply

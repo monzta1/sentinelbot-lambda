@@ -1186,7 +1186,7 @@ async function resolveSongMeaningLookup(question, history = [], songOverride = n
 
   const extraContext = song ? buildSongMeaningAnthropicContext(song) : null;
   const answer = sanitizeMeaningResponse(await callAnthropic(question, history, extraContext, {
-    maxTokens: 140,
+    maxTokens: 2000,
     intent: "song-meaning",
     normalizedQuery: normalizeCacheQuestion(question),
     cacheHit: false,
@@ -1241,7 +1241,7 @@ async function resolveSongLyricsLookup(question, history = [], songOverride = nu
   }
 
   let answer = await callAnthropic(question, history, extraContext, {
-    maxTokens: 800,
+    maxTokens: 2000,
     intent: "song-lyrics",
     normalizedQuery: normalizeCacheQuestion(question),
     cacheHit: false,
@@ -1250,7 +1250,7 @@ async function resolveSongLyricsLookup(question, history = [], songOverride = nu
   if (isIncompleteLyricsAnswer(answer)) {
     const retryQuestion = `${question}\n\nPrevious response was incomplete. Return the full structured lyrics only, with verses and chorus intact. Do not summarize. Do not stop early.`;
     answer = await callAnthropic(retryQuestion, history, extraContext, {
-      maxTokens: 1000,
+      maxTokens: 2000,
       intent: "song-lyrics",
       normalizedQuery: normalizeCacheQuestion(question),
       cacheHit: false,
@@ -2702,7 +2702,10 @@ async function getSystemPromptProduction() {
     const promptResponse = await dynamo.send(new GetCommand({
       TableName: process.env.DYNAMO_TABLE,
       Key: {
-        id: "config:system-prompt-expanded"
+        // The lean prompt (base + video index, with the 145KB of per-video
+        // deep material moved to retrieval rows) is opted into via env, so
+        // rollback to the full monolith is deleting one variable.
+        id: process.env.SYSTEM_PROMPT_KEY || "config:system-prompt-expanded"
       }
     }));
     const promptItem = promptResponse?.Item;
@@ -2713,7 +2716,7 @@ async function getSystemPromptProduction() {
 
     productionSystemPromptCache.value = promptValue;
     productionSystemPromptCache.expiresAt = now + PRODUCTION_PROMPT_CACHE_TTL_MS;
-    productionSystemPromptCache.promptKey = "config:system-prompt-expanded";
+    productionSystemPromptCache.promptKey = process.env.SYSTEM_PROMPT_KEY || "config:system-prompt-expanded";
     return promptValue;
   } catch (err) {
     console.warn("Production system prompt fallback engaged", err.message);
@@ -3685,6 +3688,79 @@ function buildSignalRoomSystemBlock(songs) {
   return lines.join("\n").trim();
 }
 
+// --- per-song video knowledge, retrieved instead of recited -------------
+// The old prompt re-sent 145KB of per-video deep material (descriptions,
+// song essays) with every question, which is why one question cost what it
+// did. The material now lives in knowledge:video:<id> rows; the questions
+// that need it get the matching row or two, and every other question
+// travels light. A lookup that fails adds nothing and breaks nothing.
+const videoKnowledgeCache = { index: null, rows: new Map(), expiresAt: 0 };
+const VIDEO_KNOWLEDGE_TTL_MS = 5 * 60 * 1000;
+const VIDEO_TITLE_STOPWORDS = new Set(["shieldbearer", "official", "video",
+  "lyric", "lyrics", "the", "and", "for", "with", "feat", "audio"]);
+
+function videoTitleTokens(title) {
+  return String(title || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/).filter((w) => w.length > 2 && !VIDEO_TITLE_STOPWORDS.has(w));
+}
+
+function matchVideoKnowledge(question, index) {
+  const q = " " + String(question || "").toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ") + " ";
+  const hits = [];
+  for (const entry of index || []) {
+    const tokens = videoTitleTokens(entry.title);
+    if (!tokens.length) continue;
+    const matched = tokens.filter((w) => q.includes(" " + w + " ")).length;
+    // Every distinctive word of a short title, or at least two of a long
+    // one: "tell me about sentinels" matches Sentinels without dragging
+    // every video into every question that says "the".
+    if (matched >= Math.min(tokens.length, 2) || (tokens.length === 1 && matched === 1)) {
+      hits.push({ entry, matched });
+    }
+  }
+  hits.sort((a, b) => b.matched - a.matched);
+  return hits.slice(0, 2).map((h) => h.entry);
+}
+
+async function lookupVideoKnowledge(question) {
+  try {
+    const now = Date.now();
+    if (!videoKnowledgeCache.index || videoKnowledgeCache.expiresAt <= now) {
+      const res = await dynamo.send(new GetCommand({
+        TableName: process.env.DYNAMO_TABLE,
+        Key: { id: "knowledge:video-index" }
+      }));
+      const raw = res?.Item?.value;
+      videoKnowledgeCache.index = Array.isArray(raw) ? raw
+        : (typeof raw === "string" ? JSON.parse(raw) : []);
+      videoKnowledgeCache.rows.clear();
+      videoKnowledgeCache.expiresAt = now + VIDEO_KNOWLEDGE_TTL_MS;
+    }
+    const matches = matchVideoKnowledge(question, videoKnowledgeCache.index);
+    if (!matches.length) return null;
+    const bodies = [];
+    for (const m of matches) {
+      let body = videoKnowledgeCache.rows.get(m.id);
+      if (body === undefined) {
+        const row = await dynamo.send(new GetCommand({
+          TableName: process.env.DYNAMO_TABLE,
+          Key: { id: `knowledge:video:${m.id}` }
+        }));
+        body = String(row?.Item?.value || "");
+        videoKnowledgeCache.rows.set(m.id, body);
+      }
+      if (body) bodies.push(body);
+    }
+    if (!bodies.length) return null;
+    return "## Song and Video Knowledge (retrieved for this question)\n\n"
+      + bodies.join("\n\n---\n\n");
+  } catch (err) {
+    console.warn("video knowledge lookup skipped", err.message);
+    return null;
+  }
+}
+
 async function callAnthropic(question, history, extraContext = null, options = {}) {
   const model = process.env.ANTHROPIC_FALLBACK_MODEL || "claude-haiku-4-5-20251001";
   const normalizedQuery = String(options.normalizedQuery || normalizeCacheQuestion(question));
@@ -3764,6 +3840,13 @@ async function callAnthropic(question, history, extraContext = null, options = {
     systemBlocks.push({
       type: "text",
       text: socialContextBlock
+    });
+  }
+  const videoKnowledgeBlock = await lookupVideoKnowledge(question);
+  if (videoKnowledgeBlock) {
+    systemBlocks.push({
+      type: "text",
+      text: videoKnowledgeBlock
     });
   }
   if (extraContext) {
@@ -4060,7 +4143,7 @@ exports.handler = async (event) => {
             const extraContext = song ? buildSongAnthropicContext(song) : null;
             try {
               answer = await callAnthropic(question, history, extraContext, {
-                maxTokens: 120,
+                maxTokens: 2000,
                 intent: "general-song-fallback",
                 normalizedQuery: normalizeCacheQuestion(question),
                 cacheHit: false,
@@ -4086,7 +4169,7 @@ exports.handler = async (event) => {
       } else {
         try {
           answer = await callAnthropic(question, history, null, {
-            maxTokens: 120,
+            maxTokens: 2000,
             intent: "general-fallback",
             normalizedQuery: normalizeCacheQuestion(question),
             cacheHit: false,
@@ -4215,6 +4298,8 @@ module.exports = {
   resolveSongWatchUrl,
   sanitizeMeaningResponse,
   findCachedAnswer,
+  matchVideoKnowledge,
+  videoTitleTokens,
   rateLimitMinuteBucket,
   normalizeQuestion,
   isResolvableIp,

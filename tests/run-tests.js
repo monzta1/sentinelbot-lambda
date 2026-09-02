@@ -357,3 +357,49 @@ setTimeout(() => {
   console.log(`SentinelBot tests: ${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
 }, 50);
+
+// --- video knowledge retrieval: the right rows, and only those ---
+{
+  const index = [
+    { id: "a1", title: "SHIELDBEARER - SENTINELS | Official Video" },
+    { id: "b2", title: "Shieldbearer | GALILEAN" },
+    { id: "c3", title: "Shieldbearer - Amazing Grace (Ten Thousand Years) [Official Audio]" },
+    { id: "d4", title: "Rabbit Pig" }
+  ];
+  assertEqual(sb.matchVideoKnowledge("tell me about sentinels", index).map(e => e.id),
+    ["a1"], "a song name pulls its own video knowledge");
+  assertEqual(sb.matchVideoKnowledge("what is galilean about", index).map(e => e.id),
+    ["b2"], "galilean matches only galilean");
+  assertEqual(sb.matchVideoKnowledge("why does god allow suffering", index).length,
+    0, "a general question drags no video knowledge along");
+  assertEqual(sb.matchVideoKnowledge("the amazing grace ten thousand years version", index).map(e => e.id),
+    ["c3"], "multi-word titles need real word overlap, not stopwords");
+  assert(sb.matchVideoKnowledge("what do you think of the official video", index).length === 0,
+    "boilerplate words alone (official, video) match nothing");
+  assert(sb.videoTitleTokens("SHIELDBEARER - SENTINELS | Official Video").join(",") === "sentinels",
+    "title tokens strip the boilerplate down to the distinctive words");
+}
+
+// --- lean prompt splitter: 96 videos never collapse into one ---
+{
+  const { splitMonolith, buildLean } = require("../scripts/build-lean-prompt.js");
+  const doc = [
+    "=== BASE PROMPT ===", "You are SentinelBot.", "",
+    "=== YOUTUBE KNOWLEDGE ===", "",
+    "- First Song | Official Video | 2026-01-01T00:00:00Z",
+    "Video ID: vid1", "Description: one.", "",
+    "- Second Song [Album | Cut] | 2026-02-02T00:00:00Z",
+    "Video ID: vid2", "Description: two.", "",
+    "=== FACEBOOK KNOWLEDGE ===", ""
+  ].join("\n");
+  const { base, videos } = splitMonolith(doc);
+  assert(base.includes("You are SentinelBot."), "base survives the split");
+  assertEqual(videos.map(v => v.id), ["vid1", "vid2"],
+    "every record splits on its trailing timestamp, pipes in titles and all");
+  assert(videos[1].title === "Second Song [Album | Cut]",
+    "a title containing pipes is kept whole");
+  const lean = buildLean(base, videos);
+  assert(lean.includes("=== VIDEO INDEX ==="), "lean prompt carries the index");
+  assert(!lean.includes("Description: one."),
+    "deep material stays out of the always-on prompt");
+}
