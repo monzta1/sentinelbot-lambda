@@ -3790,7 +3790,12 @@ async function callAnthropic(question, history, extraContext = null, options = {
       // suffering" ended at "God's response wasn't a formula", 2026-09-02).
       // The prompt keeps answers short; the ceiling exists to stop runaway
       // output, never to cut a thought in half.
-      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 1024,
+      // Generous on purpose. Adaptive thinking spends from this same
+      // ceiling, and a hard question thinks hard: at 1024 the reply to a
+      // worship challenge ended mid-sentence at "The tools are AI". The
+      // prompt keeps answers short; the ceiling only exists for runaway
+      // output, and 4000 costs at most a few cents when fully used.
+      max_tokens: Number.isInteger(options.maxTokens) ? options.maxTokens : 4000,
       system: systemBlocks,
       messages: [
         ...history.slice(-10),

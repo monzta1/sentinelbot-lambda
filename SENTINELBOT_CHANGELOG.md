@@ -7,6 +7,12 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.15.1 - September 2026
+- Default max_tokens 1024 to 4000. Adaptive thinking spends from the same
+  ceiling, and a hard question thinks hard: a worship-challenge reply
+  ended mid-sentence at "The tools are AI". Short answers still come from
+  the prompt; the ceiling is only for runaway output.
+
 ## v1.15.0 - September 2026
 - SentinelBot answers on Claude Sonnet 5 (was Haiku 4.5), set via the
   ANTHROPIC_FALLBACK_MODEL env var. The 43k-token system prompt was
