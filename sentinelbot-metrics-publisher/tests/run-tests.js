@@ -177,6 +177,23 @@ function assertEqual(actual, expected, label) {
   assert(url.includes("/contents/path/with%20spaces/file.json"), "URL encodes spaces in segments");
 }
 
+// --- withHostnameFilter: one property, several sites ---
+{
+  const plain = { dateRanges: [{ startDate: "x", endDate: "y" }], dimensions: [{ name: "city" }] };
+  assertEqual(JSON.stringify(pub.withHostnameFilter(plain, "")), JSON.stringify(plain), "empty hostname leaves the body alone");
+  const scoped = pub.withHostnameFilter(plain, "tonecommand.com");
+  assertEqual(scoped.dimensionFilter.filter.fieldName, "hostName", "filters on hostName");
+  assertEqual(scoped.dimensionFilter.filter.stringFilter.value, "tonecommand.com", "carries the hostname");
+  assertEqual(scoped.dimensionFilter.filter.stringFilter.matchType, "CONTAINS", "contains, so www. counts");
+  assert(scoped.dimensionFilter.filter.stringFilter.caseSensitive === false, "case-insensitive");
+  assert(plain.dimensionFilter === undefined, "the input body is not mutated");
+  const withOwn = { ...plain, dimensionFilter: { notExpression: { filter: { fieldName: "eventName", inListFilter: { values: ["page_view"] } } } } };
+  const both = pub.withHostnameFilter(withOwn, "shieldbearerusa.com");
+  assertEqual(both.dimensionFilter.andGroup.expressions.length, 2, "an existing filter is kept inside an andGroup");
+  assertEqual(both.dimensionFilter.andGroup.expressions[0].notExpression.filter.fieldName, "eventName", "the original filter comes first");
+  assertEqual(both.dimensionFilter.andGroup.expressions[1].filter.stringFilter.value, "shieldbearerusa.com", "the host filter second");
+}
+
 console.log("\n=========================================");
 console.log(`Metrics-publisher tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

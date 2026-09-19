@@ -32,6 +32,10 @@ const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "main";
 const METRICS_JSON_PATH = process.env.METRICS_JSON_PATH || "metrics.json";
 const GA4_PROPERTY_ID = process.env.GA4_PROPERTY_ID || "";
 const GA4_SECRET_NAME = process.env.GA4_SECRET_NAME || "shieldbearer/ga4-service-account";
+// One GA4 property now carries more than one site (shieldbearerusa.com and
+// tonecommand.com are streams of the same property), so every report is
+// scoped to one hostname. Empty means the whole property, as before.
+const GA4_HOSTNAME = String(process.env.GA4_HOSTNAME || "").trim().toLowerCase();
 const DRY_RUN = String(process.env.DRY_RUN || "true").toLowerCase() !== "false";
 const GITHUB_MAX_ATTEMPTS = Math.max(1, Number.parseInt(process.env.GITHUB_MAX_ATTEMPTS || "5", 10) || 5);
 const GITHUB_BASE_DELAY_MS = Math.max(100, Number.parseInt(process.env.GITHUB_BASE_DELAY_MS || "500", 10) || 500);
@@ -151,6 +155,24 @@ async function fetchGoogleAccessToken(serviceAccount) {
   return json.access_token;
 }
 
+// withHostnameFilter scopes a runReport body to GA4_HOSTNAME (the `hostName`
+// dimension, "contains", case-insensitive, so www. and bare both count).
+// A report that already carries a dimensionFilter keeps it inside an andGroup.
+function withHostnameFilter(body, hostname = GA4_HOSTNAME) {
+  if (!hostname) return body;
+  const hostFilter = {
+    filter: {
+      fieldName: "hostName",
+      stringFilter: { matchType: "CONTAINS", value: hostname, caseSensitive: false }
+    }
+  };
+  const existing = body.dimensionFilter;
+  return {
+    ...body,
+    dimensionFilter: existing ? { andGroup: { expressions: [existing, hostFilter] } } : hostFilter
+  };
+}
+
 async function runGa4Report(accessToken, body) {
   const url = `https://analyticsdata.googleapis.com/v1beta/properties/${encodeURIComponent(GA4_PROPERTY_ID)}:runReport`;
   const response = await fetch(url, {
@@ -159,7 +181,7 @@ async function runGa4Report(accessToken, body) {
       "authorization": `Bearer ${accessToken}`,
       "content-type": "application/json"
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(withHostnameFilter(body))
   });
   if (!response.ok) {
     const text = await response.text();
@@ -530,6 +552,7 @@ module.exports = {
   getPreviousPeriod,
   computeDeltaPct,
   buildMetricsArtifact,
+  withHostnameFilter,
   buildCanonicalMetricsArtifact,
   sumRowMetric,
   buildGitHubContentsUrl,
