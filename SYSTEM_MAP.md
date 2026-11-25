@@ -70,6 +70,7 @@ If something between artist publish and site live takes longer than ~90 minutes,
 - **Force metrics**: `aws lambda invoke --function-name sentinelbot-metrics-publisher --payload '{}' --cli-binary-format raw-in-base64-out --region us-east-1 /tmp/out.json`
 - **Ingest a song**: drop `.txt` + artwork in `~/Shieldbearer/dropzone`, then `cd ~/Shieldbearer/dropzone && node /Users/moncyabraham/Projects/sentinelbot-lambda/tools/shield-cli/bin/shield.js ingest *.txt`
 - **Denylist a misclassified video**: update the `videoIds` list on item `id = config:release-detector-denylist` in `shieldbearer-sentinel-logs`, and delete the `releaseevent#youtube#<videoId>` record so the publisher stops promoting it.
+- **Register a held release** (from the "needs review" email): add its id to `videoIds` on `id = config:release-detector-allowlist` in `shieldbearer-sentinel-logs`; the next scan registers it past the cursor. Detector dry run: invoke with `{"dryRun":true,"ignoreCursor":true}` (writes nothing). Rules: SENTINELBOT_CHANGELOG.md v1.16.1.
 
 ## Where current state lives
 
