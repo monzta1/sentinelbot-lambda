@@ -297,6 +297,78 @@ Watch on YouTube
   assertEqual(item.payload.songMeaning, "A cry that shook a nation.", "buildEventStreamItem: songMeaning sanitized");
 }
 
+// --- second release path: artist named at full length (2026-11-25) ---
+// Real titles and durations from the channel. Redemption and Monolith
+// carried no release keyword and were silently lost before this path.
+{
+  const releases = [
+    { videoId: "6tygBKCVVTs", title: "Terminator Theme x Carol of the Bells (Metal Christmas) | Shieldbearer - Redemption", durationSeconds: 562 },
+    { videoId: "TsJvHYh3iJo", title: "SHIELDBEARER | MONOLITH | CHRISTIAN METAL", durationSeconds: 298 },
+    { videoId: "LjQZ_m5LqhE", title: "Demon Hunter - I'm Done (SHIELDBEARER Cover) | Official Music Video", durationSeconds: 289 }
+  ];
+  for (const video of releases) {
+    const meta = det.getReleaseMetadata(video);
+    assertEqual(meta.isCandidate, true, `release: ${video.title}`);
+    assertEqual(meta.rejectionReason, null, `release has no rejection reason: ${video.videoId}`);
+  }
+  assertEqual(det.getReleaseMetadata(releases[0]).artistFullLength, true, "Redemption passes on the artist-at-full-length path");
+  assertEqual(det.getReleaseMetadata(releases[0]).score, 0, "Redemption has no release keyword (the old rule lost it)");
+
+  const notReleases = [
+    { videoId: "jCNAZyyt5o8", title: "I Typed One Sentence. AI Built an 8-Scene Judas Priest FM9 Preset in 6 Minutes | ToneCommand", durationSeconds: 398 },
+    { videoId: "2P8VZ1OwF1k", title: "TONECOMMAND AI building a Soldano SLO-100 inspired preset on my FM9", durationSeconds: 627 },
+    { videoId: "7f840w5mQis", title: "I Typed 8 Metal Tones Into My FM9. Didn't Touch a Knob.", durationSeconds: 335 },
+    { videoId: "x1", title: "Shieldbearer x ToneCommand: Official FM9 Preset Walkthrough", durationSeconds: 400 },
+    { videoId: "x2", title: "Shieldbearer | Our God | One Take Guitar Playthrough (Guitar Cover)", durationSeconds: 298 },
+    { videoId: "5tQRnfeP1QM", title: "Shieldbearer Live Stream", durationSeconds: 42900 },
+    { videoId: "cdNeg691X2E", title: "AI band doing AI things 🎸", durationSeconds: 186 }
+  ];
+  for (const video of notReleases) {
+    assertEqual(det.getReleaseMetadata(video).isCandidate, false, `not a release: ${video.title}`);
+  }
+  assertEqual(det.getReleaseMetadata(notReleases[3]).rejectionReason, "non_release_format", "a ToneCommand title is held even with a release keyword");
+
+  const shorts = [
+    { videoId: "juYlzrzLoj0", title: "Might As Well JUMP! My Son Plays Van Halen by Ear | Shieldbearer #Shorts", durationSeconds: 11 },
+    { videoId: "HXGiOgJ9NKI", title: "Terminator Theme Meets Carol of the Bells (Metal Version) | Shieldbearer #Shorts", durationSeconds: 61 },
+    { videoId: "s1", title: "Carol of the Bells Metal | Shieldbearer", durationSeconds: 59 },
+    { videoId: "s2", title: "Monolith | Shieldbearer", durationSeconds: 180 },
+    { videoId: "s3", title: "Still Be My Vision - (Shieldbearer Short 2)", durationSeconds: 240 },
+    { videoId: "s4", title: "Monolith | Shieldbearer", durationSeconds: 0 }
+  ];
+  for (const video of shorts) {
+    assertEqual(det.getReleaseMetadata(video).isCandidate, false, `Short is not a release: ${video.title} (${video.durationSeconds}s)`);
+  }
+  assertEqual(det.getReleaseMetadata(shorts[3]).needsManualReview, true, "a 3:00 artist upload is held for review, not dropped");
+}
+
+// --- selectReleaseVideos: cursor, allowlist, denylist ---
+{
+  const v = (videoId, title, durationSeconds) => ({ videoId, title, durationSeconds, sourceUrl: `https://www.youtube.com/watch?v=${videoId}` });
+  const uploads = [
+    v("new1", "Carol of the Bells Metal | Shieldbearer #Shorts", 20),
+    v("new2", "Shieldbearer - New Song (Official Music Video)", 250),
+    v("new3", "I Typed One Sentence. AI Built an FM9 Preset | ToneCommand", 398),
+    v("cursor", "Some Short #Shorts", 20),
+    v("old1", "SHIELDBEARER | MONOLITH | CHRISTIAN METAL", 298),
+    v("old2", "Rabbit Pig", 117)
+  ];
+  const plain = det.selectReleaseVideos(uploads, { lastSeenVideoId: "cursor" });
+  assertEqual(plain.newVideos.map((x) => x.videoId), ["new2"], "scan stops at the cursor; only the new release is picked");
+  assertEqual(plain.skippedForReview.map((x) => x.videoId), ["new3"], "the non-release format above the cursor is surfaced for review");
+  assertEqual(plain.evaluations.length, 3, "nothing past the cursor is evaluated");
+
+  const allowed = det.selectReleaseVideos(uploads, { lastSeenVideoId: "cursor", allowlist: new Set(["old2"]) });
+  assertEqual(allowed.newVideos.map((x) => x.videoId), ["new2", "old2"], "an allowlisted video past the cursor is registered anyway");
+
+  const both = det.selectReleaseVideos(uploads, { lastSeenVideoId: "cursor", allowlist: new Set(["old2", "new2"]), denylist: new Set(["old2"]) });
+  assertEqual(both.newVideos.map((x) => x.videoId), ["new2"], "denylist beats allowlist; allowlisted candidate is not picked twice");
+
+  const all = det.selectReleaseVideos(uploads, { lastSeenVideoId: "cursor", ignoreCursor: true });
+  assertEqual(all.newVideos.map((x) => x.videoId), ["new2", "old1"], "ignoreCursor evaluates the whole window (Monolith title would register)");
+  assertEqual(det.selectReleaseVideos(null).newVideos, [], "no uploads -> nothing picked");
+}
+
 console.log("\n=========================================");
 console.log(`Release-detector tests: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

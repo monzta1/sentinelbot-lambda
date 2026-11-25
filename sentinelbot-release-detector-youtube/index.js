@@ -14,6 +14,7 @@ const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID || "";
 const MAX_SCAN_RESULTS = Math.max(1, Number.parseInt(process.env.YOUTUBE_RELEASE_SCAN_LIMIT || "100", 10) || 100);
 const WATCHER_KEY = "releasewatcher#youtube";
 const DENYLIST_KEY = "config:release-detector-denylist";
+const ALLOWLIST_KEY = "config:release-detector-allowlist";
 const EVENT_PREFIX = "releaseevent#youtube#";
 const EVENT_STREAM_PK = "eventstream";
 const DEBUG_FILTER = String(process.env.DEBUG_FILTER || "").toLowerCase() === "true";
@@ -272,6 +273,21 @@ function parseIsoDuration(duration) {
 
 const EMPTY_DENYLIST = new Set();
 
+// Second release path (2026-11-25). Redemption ("... | Shieldbearer -
+// Redemption", 9:22) and Monolith ("SHIELDBEARER | MONOLITH | CHRISTIAN
+// METAL", 4:58) carried no release keyword, were skipped, and the cursor
+// moved past them for good. An upload that names the artist and runs
+// longer than any Short is a release too. YouTube Shorts run up to 3:00,
+// so the floor is 181s; live streams run for hours, so the ceiling is
+// 20 minutes. The "AI band doing AI things" Short (3:06) never named the
+// artist, so it stays held.
+const ARTIST_NAME_RE = /\bshieldbearer\b/i;
+const FULL_LENGTH_MIN_SECONDS = 181;
+const FULL_LENGTH_MAX_SECONDS = 20 * 60;
+// Upload formats that are never a song release, whichever path they would
+// otherwise pass: ToneCommand / FM9 demos, playthroughs, streams.
+const NON_RELEASE_TITLE_RE = /\b(tonecommand|fm9|preset|playthrough|tutorial|live\s?stream|subscriber count|vlog|reaction|trailer|teaser|behind the scenes)\b/i;
+
 function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
   const title = normalizeText(video?.title || "");
   const titleLower = title.toLowerCase();
@@ -280,18 +296,23 @@ function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
   const isDenylisted = Boolean(videoId) && denylist.has(videoId);
   const hasHashShorts = titleLower.includes("#shorts");
   const tooShortForRelease = durationSeconds < 45;
+  const nonReleaseFormat = NON_RELEASE_TITLE_RE.test(title);
   const releaseKeywords = ["music", "official", "single", "lyric", "live"];
   const score = releaseKeywords.reduce((total, keyword) => (
     titleLower.includes(keyword) ? total + 1 : total
   ), 0);
-  // A real release almost always carries one of the keywords above. A
-  // score of zero is the signal that bit us with the misclassified Short
-  // "AI band doing AI things": YouTube served it as a full video, the
-  // duration cleared 45s, and nothing in the title said release. Hold
-  // these for manual confirmation instead of auto-publishing them.
-  const noReleaseKeyword = score === 0;
+  const artistFullLength = ARTIST_NAME_RE.test(title)
+    && !isShortFormTitle(title)
+    && durationSeconds >= FULL_LENGTH_MIN_SECONDS
+    && durationSeconds <= FULL_LENGTH_MAX_SECONDS;
+  // A real release carries one of the keywords above or names the artist
+  // at full length. Neither is the signal that bit us with the
+  // misclassified Short "AI band doing AI things": YouTube served it as a
+  // full video, the duration cleared 45s, and nothing in the title said
+  // release. Hold these for manual confirmation instead of auto-publishing.
+  const noReleaseKeyword = score === 0 && !artistFullLength;
   const lowConfidence = score === 0 && durationSeconds < 45;
-  const isCandidate = !(isDenylisted || hasHashShorts || tooShortForRelease || noReleaseKeyword);
+  const isCandidate = !(isDenylisted || hasHashShorts || tooShortForRelease || nonReleaseFormat || noReleaseKeyword);
 
   return {
     isCandidate,
@@ -301,19 +322,62 @@ function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
         ? "title_contains_shorts_hashtag"
         : tooShortForRelease
           ? "duration_below_45_seconds"
-          : noReleaseKeyword
-            ? "no_release_keyword"
-            : lowConfidence
-              ? "low_confidence_candidate"
-              : null,
+          : nonReleaseFormat
+            ? "non_release_format"
+            : noReleaseKeyword
+              ? "no_release_keyword"
+              : lowConfidence
+                ? "low_confidence_candidate"
+                : null,
     score,
     durationSeconds,
     isDenylisted,
+    artistFullLength,
+    nonReleaseFormat,
     noReleaseKeyword,
-    needsManualReview: noReleaseKeyword && !isDenylisted && !hasHashShorts && !tooShortForRelease,
+    needsManualReview: (noReleaseKeyword || nonReleaseFormat) && !isDenylisted && !hasHashShorts && !tooShortForRelease,
     lowConfidence,
     debugBypass: DEBUG_FILTER && !isDenylisted && !hasHashShorts && !tooShortForRelease && score === 0
   };
+}
+
+// Walk the scanned uploads (newest first) and pick what to register.
+// The normal scan stops at the cursor (the newest video the last run
+// saw). Allowlisted video ids are the operator's recovery path for a
+// release the rules rejected: they are taken wherever they sit in the
+// scan window, cursor or not, unless also denylisted. Writes are
+// create-only, so an allowlisted video that is already registered just
+// counts as a duplicate on later runs.
+function selectReleaseVideos(videos, { lastSeenVideoId = null, denylist = EMPTY_DENYLIST, allowlist = EMPTY_DENYLIST, ignoreCursor = false } = {}) {
+  const newVideos = [];
+  const skippedForReview = [];
+  const evaluations = [];
+  const picked = new Set();
+  let pastCursor = false;
+  for (const video of videos || []) {
+    if (!ignoreCursor && shouldStopScanning(video.videoId, lastSeenVideoId)) {
+      pastCursor = true;
+    }
+    const allowlisted = allowlist.has(video.videoId) && !denylist.has(video.videoId);
+    if (pastCursor && !allowlisted) continue;
+    const check = getReleaseMetadata(video, denylist);
+    evaluations.push({ video, check, allowlisted });
+    if (check.isCandidate || allowlisted) {
+      if (!picked.has(video.videoId)) {
+        picked.add(video.videoId);
+        newVideos.push(video);
+      }
+      continue;
+    }
+    if (check.needsManualReview) {
+      skippedForReview.push({
+        videoId: video.videoId,
+        title: video.title,
+        sourceUrl: video.sourceUrl
+      });
+    }
+  }
+  return { newVideos, skippedForReview, evaluations };
 }
 
 function isReleaseCandidate(video, denylist = EMPTY_DENYLIST) {
@@ -431,21 +495,33 @@ async function loadWatcherState() {
 // as a release. Item shape: { id, videoIds: ["abc", ...] }. Fails open
 // (empty set) so a DynamoDB blip never stalls the whole scan; a slipped
 // video is caught on the next run once the table is reachable again.
-async function loadDenylist() {
+async function loadVideoIdList(key, failStage) {
   try {
     const response = await dynamo.send(new GetCommand({
       TableName: TABLE_NAME,
       Key: {
-        id: DENYLIST_KEY
+        id: key
       }
     }));
     const ids = response?.Item?.videoIds;
     if (!Array.isArray(ids)) return new Set();
     return new Set(ids.map((value) => String(value || "").trim()).filter(Boolean));
   } catch (error) {
-    logStage("release-denylist-load-failed", { error: error?.message || String(error) });
+    logStage(failStage, { error: error?.message || String(error) });
     return new Set();
   }
+}
+
+async function loadDenylist() {
+  return loadVideoIdList(DENYLIST_KEY, "release-denylist-load-failed");
+}
+
+// Operator-controlled allowlist: { id, videoIds: [...] }. A video the
+// rules held for review is registered on the next run once its id is
+// here, even though the cursor already moved past it. Fails open (empty
+// set) like the denylist.
+async function loadAllowlist() {
+  return loadVideoIdList(ALLOWLIST_KEY, "release-allowlist-load-failed");
 }
 /* c8 ignore stop */
 
@@ -726,14 +802,16 @@ async function publishScanSummary(payload) {
     }
     if (reviewItems.length) {
       lines.push("");
-      lines.push("Skipped, needs manual confirmation (no release keyword in title):");
+      lines.push("Skipped, needs manual confirmation (no release keyword or artist name at full length):");
       for (const item of reviewItems) {
         lines.push(`  - ${item.title || "(untitled)"} ${item.sourceUrl || ""}`.trimEnd());
       }
       lines.push("");
-      lines.push("If one of these is a real release, add it as a coming_soon draft");
-      lines.push("or rename the upload with a release keyword. If it is a Short or");
-      lines.push("not a release, add its video ID to config:release-detector-denylist.");
+      lines.push("If one of these is a real release, add its video ID to videoIds on");
+      lines.push("config:release-detector-allowlist (shieldbearer-sentinel-logs); the next");
+      lines.push("run registers it. Renaming the upload does not help: the scan cursor has");
+      lines.push("already moved past it. If it is a Short or not a release, add its video");
+      lines.push("ID to config:release-detector-denylist so it stops showing up.");
     }
   } else {
     lines.push(`Error: ${payload.error || "unknown"}`);
@@ -892,9 +970,15 @@ function shouldStopScanning(videoId, lastSeenVideoId) {
 }
 
 /* c8 ignore start: handler entry, tested via war-game pattern */
-exports.handler = async () => {
+exports.handler = async (event = {}) => {
   const startedAt = Date.now();
   const requestTimestamp = nowIso();
+  // {"dryRun": true} evaluates and logs every candidate but writes
+  // nothing: no records, no cursor move, no email, no heartbeat.
+  // {"dryRun": true, "ignoreCursor": true} evaluates the whole scan
+  // window, for checking the rules against the real channel.
+  const dryRun = event?.dryRun === true;
+  const ignoreCursor = dryRun && event?.ignoreCursor === true;
 
   try {
     const playlistId = await fetchUploadsPlaylistId();
@@ -902,6 +986,7 @@ exports.handler = async () => {
     const lastSeenVideoId = state?.latestVideoId || null;
     const lastSeenPublishedAt = state?.latestPublishedAt || null;
     const denylist = await loadDenylist();
+    const allowlist = await loadAllowlist();
     const videos = await fetchLatestVideos({
       playlistId,
       limit: MAX_SCAN_RESULTS
@@ -912,38 +997,55 @@ exports.handler = async () => {
       ...videoDetails.get(video.videoId)
     }));
 
-    const newVideos = [];
-    const skippedForReview = [];
-    for (const video of enrichedVideos) {
-      if (shouldStopScanning(video.videoId, lastSeenVideoId)) {
-        break;
-      }
-      const candidateCheck = getReleaseMetadata(video, denylist);
+    const { newVideos, skippedForReview, evaluations } = selectReleaseVideos(enrichedVideos, {
+      lastSeenVideoId,
+      denylist,
+      allowlist,
+      ignoreCursor
+    });
+    for (const { video, check, allowlisted } of evaluations) {
       logStage("youtube-release-candidate-evaluated", {
         traceId: buildTraceId(video.videoId),
         videoId: video.videoId,
         title: video.title,
-        durationSeconds: candidateCheck.durationSeconds,
-        isCandidate: candidateCheck.isCandidate,
-        rejectionReason: candidateCheck.rejectionReason,
-        score: candidateCheck.score,
-        isDenylisted: candidateCheck.isDenylisted,
-        needsManualReview: candidateCheck.needsManualReview,
-        lowConfidence: candidateCheck.lowConfidence,
+        durationSeconds: check.durationSeconds,
+        isCandidate: check.isCandidate,
+        allowlisted,
+        rejectionReason: check.rejectionReason,
+        score: check.score,
+        artistFullLength: check.artistFullLength,
+        isDenylisted: check.isDenylisted,
+        needsManualReview: check.needsManualReview,
+        lowConfidence: check.lowConfidence,
         debugFilter: DEBUG_FILTER,
-        debugBypass: candidateCheck.debugBypass
+        debugBypass: check.debugBypass,
+        dryRun
       });
-      if (!candidateCheck.isCandidate) {
-        if (candidateCheck.needsManualReview) {
-          skippedForReview.push({
-            videoId: video.videoId,
-            title: video.title,
-            sourceUrl: video.sourceUrl
-          });
-        }
-        continue;
-      }
-      newVideos.push(video);
+    }
+
+    if (dryRun) {
+      const elapsedMs = Date.now() - startedAt;
+      logStage("youtube-release-scan-dry-run", {
+        timestamp: requestTimestamp,
+        ignoreCursor,
+        scannedCount: enrichedVideos.length,
+        evaluatedCount: evaluations.length,
+        wouldRegister: newVideos.map((video) => ({ videoId: video.videoId, title: video.title })),
+        skippedForReview,
+        elapsedMs
+      });
+      return {
+        statusCode: 200,
+        body: JSON.stringify({
+          ok: true,
+          dryRun: true,
+          ignoreCursor,
+          scannedCount: enrichedVideos.length,
+          evaluatedCount: evaluations.length,
+          wouldRegister: newVideos.map((video) => ({ videoId: video.videoId, title: video.title })),
+          skippedForReview
+        })
+      };
     }
 
     const events = [];
@@ -1095,7 +1197,9 @@ module.exports = {
   buildReleaseEventItem,
   getReleaseMetadata,
   isReleaseCandidate,
+  selectReleaseVideos,
   loadDenylist,
+  loadAllowlist,
   buildSongItem,
   writeSongItem,
   mergeDraftOntoSongItem,

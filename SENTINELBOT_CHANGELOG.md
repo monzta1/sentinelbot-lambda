@@ -7,6 +7,32 @@ Versioning note:
 - Major bumps track architecture or deployment model changes
 - Always add the newest entry at the top of the file
 
+## v1.16.1 - November 2026
+- YouTube release-detector: real releases are no longer silently lost.
+  Redemption ("... | Shieldbearer - Redemption", 9:22) and Monolith
+  ("SHIELDBEARER | MONOLITH | CHRISTIAN METAL", 4:58) had none of the
+  release keywords, were held for review, and the scan cursor moved past
+  them, so they were never looked at again. Second release path: a title
+  that names Shieldbearer, has no Short marker, and runs 181s to 20
+  minutes (Shorts run up to 3:00, live streams for hours) is a release.
+  "AI band doing AI things" never named the artist and stays held.
+- Non-release formats are held on either path: ToneCommand, FM9, preset,
+  playthrough, tutorial, live stream, subscriber count, vlog, reaction,
+  trailer, teaser, behind the scenes. They still appear in the review
+  email.
+- Operator allowlist `config:release-detector-allowlist` (shieldbearer-
+  sentinel-logs, shape `{ id, videoIds: [] }`): a listed video in the
+  scan window is registered on the next run even after the cursor moved
+  past it. Denylist wins. Writes stay create-only. The review email now
+  points at the allowlist instead of "rename the upload", which never
+  worked once the cursor had moved.
+- Dry run: invoke with `{"dryRun":true}` (add `"ignoreCursor":true` to
+  evaluate the whole 100-video window) to log every decision and the
+  would-register list without writing, moving the cursor, emailing, or
+  pinging the heartbeat.
+- 30 new detector tests with real channel titles (Redemption, Monolith,
+  I'm Done, the ToneCommand demos, the Shorts).
+
 ## v1.16.0 - September 2026
 - Retrieval instead of recitation. The system prompt re-sent 145KB of
   per-video deep material (96 video records) with every question; that
