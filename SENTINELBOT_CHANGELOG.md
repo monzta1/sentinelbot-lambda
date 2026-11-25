@@ -16,6 +16,9 @@ Versioning note:
   that names Shieldbearer, has no Short marker, and runs 181s to 20
   minutes (Shorts run up to 3:00, live streams for hours) is a release.
   "AI band doing AI things" never named the artist and stays held.
+- Shorts are held on either path: a Short marker in the title or under
+  2:00. The keyword path used to let 61s "Official Short" uploads through.
+  Shorts stay out of the review email unless the upload is full length.
 - Non-release formats are held on either path: ToneCommand, FM9, preset,
   playthrough, tutorial, live stream, subscriber count, vlog, reaction,
   trailer, teaser, behind the scenes. They still appear in the review
@@ -30,7 +33,7 @@ Versioning note:
   evaluate the whole 100-video window) to log every decision and the
   would-register list without writing, moving the cursor, emailing, or
   pinging the heartbeat.
-- 30 new detector tests with real channel titles (Redemption, Monolith,
+- 36 new detector tests with real channel titles (Redemption, Monolith,
   I'm Done, the ToneCommand demos, the Shorts).
 
 ## v1.16.0 - September 2026

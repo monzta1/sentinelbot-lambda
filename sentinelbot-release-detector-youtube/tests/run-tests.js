@@ -340,6 +340,16 @@ Watch on YouTube
     assertEqual(det.getReleaseMetadata(video).isCandidate, false, `Short is not a release: ${video.title} (${video.durationSeconds}s)`);
   }
   assertEqual(det.getReleaseMetadata(shorts[3]).needsManualReview, true, "a 3:00 artist upload is held for review, not dropped");
+
+  // The keyword path no longer lets Shorts through either.
+  const officialShort = det.getReleaseMetadata({ videoId: "wkLEnSO-SUg", title: "Pahalgam - A Prayer For India (Shieldbearer | Official Short)", durationSeconds: 61 });
+  assertEqual(officialShort.isCandidate, false, "61s 'Official Short' is not a release despite the keyword");
+  assertEqual(officialShort.rejectionReason, "short_form", "rejection reason short_form");
+  assertEqual(officialShort.needsManualReview, false, "a real Short stays out of the review email");
+  const markedLong = det.getReleaseMetadata({ videoId: "x3", title: "Short of Glory | Shieldbearer (Official Video)", durationSeconds: 250 });
+  assertEqual(markedLong.isCandidate, false, "a full-length upload with a short marker is held");
+  assertEqual(markedLong.needsManualReview, true, "...but surfaced for review, not dropped");
+  assertEqual(det.getReleaseMetadata({ videoId: "pRPnsQovq70", title: "Cars | You Won’t Believe This True Story | Shieldbearer", durationSeconds: 345 }).isCandidate, true, "Cars (a country song with no keyword) is a release");
 }
 
 // --- selectReleaseVideos: cursor, allowlist, denylist ---

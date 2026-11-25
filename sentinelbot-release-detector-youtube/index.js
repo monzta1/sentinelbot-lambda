@@ -296,6 +296,10 @@ function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
   const isDenylisted = Boolean(videoId) && denylist.has(videoId);
   const hasHashShorts = titleLower.includes("#shorts");
   const tooShortForRelease = durationSeconds < 45;
+  // Short markers in the title ("Official Short 2") or under 2:00 is a
+  // Short on either path. Before this the keyword path let 61s "Official
+  // Short" uploads through.
+  const shortForm = isShortFormEntry(title, durationSeconds);
   const nonReleaseFormat = NON_RELEASE_TITLE_RE.test(title);
   const releaseKeywords = ["music", "official", "single", "lyric", "live"];
   const score = releaseKeywords.reduce((total, keyword) => (
@@ -312,7 +316,7 @@ function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
   // release. Hold these for manual confirmation instead of auto-publishing.
   const noReleaseKeyword = score === 0 && !artistFullLength;
   const lowConfidence = score === 0 && durationSeconds < 45;
-  const isCandidate = !(isDenylisted || hasHashShorts || tooShortForRelease || nonReleaseFormat || noReleaseKeyword);
+  const isCandidate = !(isDenylisted || hasHashShorts || tooShortForRelease || shortForm || nonReleaseFormat || noReleaseKeyword);
 
   return {
     isCandidate,
@@ -322,20 +326,24 @@ function getReleaseMetadata(video, denylist = EMPTY_DENYLIST) {
         ? "title_contains_shorts_hashtag"
         : tooShortForRelease
           ? "duration_below_45_seconds"
-          : nonReleaseFormat
-            ? "non_release_format"
-            : noReleaseKeyword
-              ? "no_release_keyword"
-              : lowConfidence
-                ? "low_confidence_candidate"
-                : null,
+          : shortForm
+            ? "short_form"
+            : nonReleaseFormat
+              ? "non_release_format"
+              : noReleaseKeyword
+                ? "no_release_keyword"
+                : lowConfidence
+                  ? "low_confidence_candidate"
+                  : null,
     score,
     durationSeconds,
     isDenylisted,
     artistFullLength,
+    shortForm,
     nonReleaseFormat,
     noReleaseKeyword,
-    needsManualReview: (noReleaseKeyword || nonReleaseFormat) && !isDenylisted && !hasHashShorts && !tooShortForRelease,
+    needsManualReview: !isDenylisted && !hasHashShorts && !tooShortForRelease
+      && (shortForm ? durationSeconds >= FULL_LENGTH_MIN_SECONDS : (noReleaseKeyword || nonReleaseFormat)),
     lowConfidence,
     debugBypass: DEBUG_FILTER && !isDenylisted && !hasHashShorts && !tooShortForRelease && score === 0
   };
